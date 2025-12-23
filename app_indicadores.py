@@ -269,7 +269,7 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         
         def get_kpi(df, col_keywords):
             if df.empty: return 0
-            if 'AÑO' not in df.columns or 'MES' not in df.columns:
+            if 'AÑO' in df.columns and 'MES' in df.columns:
                 mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
                 df_filtered = df[mask]
                 if df_filtered.empty: return 0
