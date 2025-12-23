@@ -22,6 +22,16 @@ FILES_MASTER = {
     'CARTERA': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - CARTERA.csv'
 }
 
+# --- ESTRUCTURA EXACTA DE COLUMNAS (Para el Editor) ---
+ESTRUCTURA_COLUMNAS = {
+    'FACTURACION': ['AÑO', 'MES', 'Ranking', 'Aseguradora / Cliente', 'Valor Facturado', '% Participación'],
+    'RADICACION': ['AÑO', 'MES', 'Aseguradora', 'No. Facturas', 'Valor Radicado', 'Fecha Corte'],
+    'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
+    'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
+    'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades'] # Nota: Usamos MES_LETRAS para el segundo campo de mes
+}
+
 # --- DATOS MAESTROS (Indicadores Oficiales) ---
 DATOS_MAESTROS_IND = [
     # FACTURACIÓN
@@ -128,6 +138,9 @@ def cargar_datos_master_disco():
     missing = []
     
     for key, filename in FILES_MASTER.items():
+        # Definir estructura esperada
+        cols_esperadas = ESTRUCTURA_COLUMNAS.get(key, ['AÑO', 'MES'])
+        
         if os.path.exists(filename):
             try:
                 try:
@@ -136,8 +149,27 @@ def cargar_datos_master_disco():
                 except:
                     df = pd.read_csv(filename, sep=';', encoding='latin1')
                 
-                # Limpieza
-                df.columns = df.columns.str.strip().str.upper()
+                # Limpieza de nombres de columnas
+                df.columns = df.columns.str.strip()
+                
+                # Mapeo de columnas si difieren ligeramente
+                # Especialmente el segundo MES en admisiones
+                if key == 'ADMISIONES':
+                    # Si hay columnas duplicadas, pandas las nombra MES, MES.1
+                    df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
+                
+                # Normalización a mayúsculas para coincidir con estructura
+                # (Solo si no coincide exactamente, para evitar problemas de case)
+                
+                # Asegurar que existan todas las columnas requeridas
+                for col in cols_esperadas:
+                    if col not in df.columns:
+                        df[col] = None # Crear vacía si falta
+                
+                # Reordenar y filtrar columnas extrañas
+                df = df[cols_esperadas]
+                
+                # Limpieza numérica
                 for col in df.columns:
                     if df[col].dtype == object:
                         if df[col].astype(str).str.contains(r'\$').any():
@@ -149,10 +181,11 @@ def cargar_datos_master_disco():
                 
                 data[key] = df
             except Exception as e:
-                data[key] = pd.DataFrame(columns=['AÑO', 'MES'])
+                # Si falla, crear estructura vacía correcta
+                data[key] = pd.DataFrame(columns=cols_esperadas)
         else:
             missing.append(filename)
-            data[key] = pd.DataFrame(columns=['AÑO', 'MES'])
+            data[key] = pd.DataFrame(columns=cols_esperadas)
     return data, missing
 
 def guardar_datos_master_disco(dfs):
@@ -245,7 +278,13 @@ if opcion == "📈 Tablero Operativo (Data Master)":
                 mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
                 df_filtered = df[mask]
                 if df_filtered.empty: return 0
-                target_col = next((c for c in df.columns if any(k in c for k in col_keywords)), None)
+                # Buscar columna exacta o aproximada
+                target_col = None
+                for c in df.columns:
+                    if any(k.upper() in c.upper() for k in col_keywords):
+                        target_col = c
+                        break
+                
                 if target_col:
                     if df_filtered[target_col].dtype == object:
                          return pd.to_numeric(df_filtered[target_col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum()
@@ -254,19 +293,18 @@ if opcion == "📈 Tablero Operativo (Data Master)":
 
         dfs_m = st.session_state.dfs_master
         
-        facturado = get_kpi(dfs_m['FACTURACION'], ['FACTURADO', 'VALOR FACTURADO'])
-        radicado = get_kpi(dfs_m['RADICACION'], ['RADICADO', 'VALOR RADICADO'])
+        facturado = get_kpi(dfs_m['FACTURACION'], ['Valor Facturado', 'FACTURADO'])
+        radicado = get_kpi(dfs_m['RADICACION'], ['Valor Radicado', 'RADICADO'])
         brecha = facturado - radicado
-        recaudo = get_kpi(dfs_m['CARTERA'], ['RECAUDO REAL', 'REAL'])
-        meta_rec = get_kpi(dfs_m['CARTERA'], ['META'])
+        recaudo = get_kpi(dfs_m['CARTERA'], ['Recaudo Real', 'REAL'])
+        meta_rec = get_kpi(dfs_m['CARTERA'], ['Meta Recaudo', 'META'])
         cump = (recaudo / meta_rec) if meta_rec > 0 else 0
         
-        # KPIs Glosas (Explicitamente solicitados)
-        glosa_inicial = get_kpi(dfs_m['GLOSAS'], ['INICIAL', 'VALOR GLOSA'])
-        devoluciones = get_kpi(dfs_m['GLOSAS'], ['DEVOLUCIONES', 'VALOR DEVOLUCIONES'])
-        # Rechazado = Lo que se recupera/levanta
-        levantado = get_kpi(dfs_m['GLOSAS'], ['RECHAZADO', 'LEVANTADO', 'VALOR RECHAZADO'])
-        aceptado = get_kpi(dfs_m['GLOSAS'], ['ACEPTADO', 'VALOR ACEPTADO'])
+        # KPIs Glosas
+        glosa_inicial = get_kpi(dfs_m['GLOSAS'], ['Valor Glosa Inicial', 'INICIAL'])
+        devoluciones = get_kpi(dfs_m['GLOSAS'], ['Valor Devoluciones', 'DEVOLUCIONES'])
+        levantado = get_kpi(dfs_m['GLOSAS'], ['Valor Rechazado', 'Rechazado'])
+        aceptado = get_kpi(dfs_m['GLOSAS'], ['Valor Aceptado', 'Aceptado'])
         
         def kpi_card_html(title, val, is_pct=False, color="#0F1C3F"):
             fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
@@ -300,7 +338,7 @@ if opcion == "📈 Tablero Operativo (Data Master)":
     # -----------------------------------------------
     with tab_edit:
         st.header("📝 Gestión de Datos Operativos")
-        st.info("Aquí puede pegar datos directamente desde Excel (Ctrl+V) o editar los valores existentes.")
+        st.info("Puede copiar y pegar datos masivamente desde Excel sobre la tabla. Asegúrese de que el orden de columnas coincida.")
         
         # Selector de Dataset
         dataset_name = st.selectbox("Seleccione Base de Datos a Editar:", list(FILES_MASTER.keys()))
@@ -308,8 +346,11 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         # Cargar DF actual
         df_edit = st.session_state.dfs_master[dataset_name]
         
+        # Mostrar estructura esperada
+        cols_esperadas = ESTRUCTURA_COLUMNAS[dataset_name]
+        st.caption(f"Columnas requeridas: {', '.join(cols_esperadas)}")
+        
         # Editor interactivo
-        st.markdown(f"**Editando: {dataset_name}**")
         edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}")
         
         # Botón Guardar
