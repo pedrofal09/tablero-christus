@@ -12,7 +12,7 @@ st.set_page_config(page_title="Tablero Ciclo de Ingresos Integrado", layout="wid
 ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
 
-# Nombres de archivos operativos (MASTER) que deben estar en la carpeta/repo
+# Nombres de archivos operativos (MASTER)
 FILES_MASTER = {
     'ADMISIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - ADMISIONES.csv',
     'AUTORIZACIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - AUTORIZACIONES.csv',
@@ -58,7 +58,7 @@ DATOS_MAESTROS_IND = [
     ['CARTERA', 'Jefatura de Cartera', '% de cartera >360 días', 0.36, 'MIN', '< 36%']
 ]
 
-# Meses de Nov-25 a Dic-26
+# Meses
 MESES = ['NOV-25', 'DIC-25', 'ENE-26', 'FEB-26', 'MAR-26', 'ABR-26', 'MAY-26', 
          'JUN-26', 'JUL-26', 'AGO-26', 'SEP-26', 'OCT-26', 'NOV-26', 'DIC-26']
 
@@ -123,15 +123,13 @@ def guardar_datos_ind(df):
     df.to_csv(ARCHIVO_DATOS_INDICADORES, index=False)
 
 # --- Funciones para Tablero Operativo (MASTER) ---
-@st.cache_data
-def cargar_datos_master():
+def cargar_datos_master_disco():
     data = {}
     missing = []
     
     for key, filename in FILES_MASTER.items():
         if os.path.exists(filename):
             try:
-                # Intentar leer CSV con diferentes configuraciones
                 try:
                     df = pd.read_csv(filename, sep=',')
                     if len(df.columns) < 2: df = pd.read_csv(filename, sep=';')
@@ -140,8 +138,6 @@ def cargar_datos_master():
                 
                 # Limpieza
                 df.columns = df.columns.str.strip().str.upper()
-                
-                # Limpieza numérica
                 for col in df.columns:
                     if df[col].dtype == object:
                         if df[col].astype(str).str.contains(r'\$').any():
@@ -153,12 +149,20 @@ def cargar_datos_master():
                 
                 data[key] = df
             except Exception as e:
-                # st.error(f"Error leyendo {filename}: {e}") # Ocultar error en prod
                 data[key] = pd.DataFrame(columns=['AÑO', 'MES'])
         else:
             missing.append(filename)
             data[key] = pd.DataFrame(columns=['AÑO', 'MES'])
     return data, missing
+
+def guardar_datos_master_disco(dfs):
+    for key, df in dfs.items():
+        filename = FILES_MASTER[key]
+        df.to_csv(filename, index=False)
+
+# Inicializar sesión de datos master
+if 'dfs_master' not in st.session_state:
+    st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
 # ==============================================================================
 # LÓGICA DE LA APLICACIÓN
@@ -191,98 +195,170 @@ user = st.session_state.user_info
 rol = user['ROL']
 area_permiso = user['AREA_ACCESO']
 
-# Sidebar Header
 with st.sidebar:
     try:
         st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=150)
     except:
         st.write("🏥 **CHRISTUS HEALTH**")
-        
     st.subheader(f"👤 {user['USUARIO']}")
     st.caption(f"Rol: {rol}")
-    
     if st.button("Cerrar Sesión"):
         st.session_state.user_info = None
         st.rerun()
     st.markdown("---")
 
-# Cargar Datos Indicadores
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
 df_ind = st.session_state.df_ind
 
-# Cargar Datos Operativos (Master)
-dfs_master, faltantes_master = cargar_datos_master()
-
-# --- MENÚ DE NAVEGACIÓN ---
+# --- MENÚ ---
 menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Master)"]
-
 if rol in ['ADMIN', 'LIDER']:
     menu.append("📝 Reportar Indicador")
-
 if rol == 'ADMIN':
     menu.append("⚙️ Admin Usuarios")
 
 opcion = st.sidebar.radio("Navegación:", menu)
 
+# --- VISTA: TABLERO OPERATIVO MASTER (MODIFICADO) ---
+if opcion == "📈 Tablero Operativo (Data Master)":
+    
+    tab_vis, tab_edit = st.tabs(["📊 Visualización KPIs", "📝 Editor de Datos (Operativo)"])
+    
+    # -----------------------------------------------
+    # PESTAÑA 1: VISUALIZACIÓN
+    # -----------------------------------------------
+    with tab_vis:
+        st.header("Tablero Operativo - Consolidado")
+        
+        # Filtros de Tiempo
+        anios = [2025, 2026]
+        meses_dict = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
+        
+        c1, c2 = st.columns(2)
+        anio_sel = c1.selectbox("Año Op.", anios)
+        mes_sel = c2.selectbox("Mes Op.", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], index=10 if anio_sel==2025 else 0)
+        
+        def get_kpi(df, col_keywords):
+            if df.empty: return 0
+            if 'AÑO' in df.columns and 'MES' in df.columns:
+                mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
+                df_filtered = df[mask]
+                if df_filtered.empty: return 0
+                target_col = next((c for c in df.columns if any(k in c for k in col_keywords)), None)
+                if target_col:
+                    if df_filtered[target_col].dtype == object:
+                         return pd.to_numeric(df_filtered[target_col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum()
+                    return df_filtered[target_col].sum()
+            return 0
+
+        dfs_m = st.session_state.dfs_master
+        
+        facturado = get_kpi(dfs_m['FACTURACION'], ['FACTURADO', 'VALOR FACTURADO'])
+        radicado = get_kpi(dfs_m['RADICACION'], ['RADICADO', 'VALOR RADICADO'])
+        brecha = facturado - radicado
+        recaudo = get_kpi(dfs_m['CARTERA'], ['RECAUDO REAL', 'REAL'])
+        meta_rec = get_kpi(dfs_m['CARTERA'], ['META'])
+        cump = (recaudo / meta_rec) if meta_rec > 0 else 0
+        
+        # KPIs Glosas (Explicitamente solicitados)
+        glosa_inicial = get_kpi(dfs_m['GLOSAS'], ['INICIAL', 'VALOR GLOSA'])
+        devoluciones = get_kpi(dfs_m['GLOSAS'], ['DEVOLUCIONES', 'VALOR DEVOLUCIONES'])
+        # Rechazado = Lo que se recupera/levanta
+        levantado = get_kpi(dfs_m['GLOSAS'], ['RECHAZADO', 'LEVANTADO', 'VALOR RECHAZADO'])
+        aceptado = get_kpi(dfs_m['GLOSAS'], ['ACEPTADO', 'VALOR ACEPTADO'])
+        
+        def kpi_card_html(title, val, is_pct=False, color="#0F1C3F"):
+            fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
+            return f"""<div class="kpi-card"><div class="kpi-title">{title}</div><div class="kpi-value" style="color:{color}">{fmt}</div></div>"""
+        
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: st.markdown(kpi_card_html("Facturado", facturado), unsafe_allow_html=True)
+        with k2: st.markdown(kpi_card_html("Radicado", radicado), unsafe_allow_html=True)
+        with k3: st.markdown(kpi_card_html("Recaudo Real", recaudo), unsafe_allow_html=True)
+        with k4: st.markdown(kpi_card_html("% Cumplimiento", cump, True, "green" if cump >= 0.9 else "orange"), unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.subheader("Gestión de Glosas y Devoluciones")
+        g1, g2, g3, g4 = st.columns(4)
+        with g1: st.markdown(kpi_card_html("Devoluciones", devoluciones), unsafe_allow_html=True)
+        with g2: st.markdown(kpi_card_html("Glosa Inicial", glosa_inicial), unsafe_allow_html=True)
+        with g3: st.markdown(kpi_card_html("Levantado (Recuperado)", levantado, False, "green"), unsafe_allow_html=True)
+        with g4: st.markdown(kpi_card_html("Aceptado (Pérdida)", aceptado, False, "red"), unsafe_allow_html=True)
+        
+        st.markdown("---")
+        st.subheader("Detalle Operativo (Facturación)")
+        df_fac = dfs_m['FACTURACION']
+        if not df_fac.empty and 'AÑO' in df_fac.columns:
+            mask = (df_fac['AÑO'] == anio_sel) & (df_fac['MES'] == mes_sel)
+            st.dataframe(df_fac[mask], use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin datos para este periodo.")
+
+    # -----------------------------------------------
+    # PESTAÑA 2: EDITOR DE DATOS (NUEVO)
+    # -----------------------------------------------
+    with tab_edit:
+        st.header("📝 Gestión de Datos Operativos")
+        st.info("Aquí puede pegar datos directamente desde Excel (Ctrl+V) o editar los valores existentes.")
+        
+        # Selector de Dataset
+        dataset_name = st.selectbox("Seleccione Base de Datos a Editar:", list(FILES_MASTER.keys()))
+        
+        # Cargar DF actual
+        df_edit = st.session_state.dfs_master[dataset_name]
+        
+        # Editor interactivo
+        st.markdown(f"**Editando: {dataset_name}**")
+        edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}")
+        
+        # Botón Guardar
+        if st.button(f"💾 Guardar Cambios en {dataset_name}"):
+            st.session_state.dfs_master[dataset_name] = edited_df
+            # Guardar en disco (CSV)
+            filename = FILES_MASTER[dataset_name]
+            edited_df.to_csv(filename, index=False)
+            st.success(f"¡Datos de {dataset_name} actualizados correctamente!")
+            time.sleep(1)
+            st.rerun()
+
 # ==========================================
-# MODULO 1: GESTIÓN DE USUARIOS (ADMIN)
+# MODULO 1: ADMIN USUARIOS (Igual al anterior)
 # ==========================================
-if opcion == "⚙️ Admin Usuarios":
+elif opcion == "⚙️ Admin Usuarios":
     st.title("Gestión de Usuarios")
     df_users = cargar_usuarios()
     st.dataframe(df_users, hide_index=True)
-    
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Crear Usuario")
         with st.form("new_u"):
-            nu = st.text_input("Usuario")
-            np = st.text_input("Pass")
-            nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"])
-            areas = ['TODAS'] + list(df_ind['ÁREA'].unique())
-            na = st.selectbox("Área", areas)
+            nu = st.text_input("Usuario"); np = st.text_input("Pass"); nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"])
+            na = st.selectbox("Área", ['TODAS'] + list(df_ind['ÁREA'].unique()))
             if st.form_submit_button("Crear"):
                 if nu and np:
                     new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
                     df_users = pd.concat([df_users, new_row], ignore_index=True)
-                    guardar_usuarios(df_users)
-                    st.success("Creado")
-                    st.rerun()
-    
+                    guardar_usuarios(df_users); st.success("Creado"); st.rerun()
     with c2:
-        st.subheader("Eliminar Usuario")
-        u_del = st.selectbox("Usuario a eliminar", df_users['USUARIO'].unique())
+        st.subheader("Eliminar")
+        u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique())
         if st.button("Eliminar"):
             if u_del != 'admin':
                 df_users = df_users[df_users['USUARIO'] != u_del]
-                guardar_usuarios(df_users)
-                st.success("Eliminado")
-                st.rerun()
-            else:
-                st.error("No se puede eliminar admin")
+                guardar_usuarios(df_users); st.success("Eliminado"); st.rerun()
 
 # ==========================================
 # MODULO 2: REPORTE INDICADORES
 # ==========================================
 elif opcion == "📝 Reportar Indicador":
-    st.header("Reporte Mensual de Indicadores")
-    
-    # Filtro áreas
+    st.header("Reporte Mensual Indicadores")
     areas_posibles = df_ind['ÁREA'].unique()
-    if area_permiso != 'TODAS':
-        areas_posibles = [a for a in areas_posibles if a == area_permiso]
-    
-    if len(areas_posibles) == 0:
-        st.error("No tienes área asignada.")
-        st.stop()
-        
+    if area_permiso != 'TODAS': areas_posibles = [a for a in areas_posibles if a == area_permiso]
     c1, c2 = st.columns(2)
     area_sel = c1.selectbox("Área:", areas_posibles)
     mes_sel = c2.selectbox("Mes:", MESES)
-    
     df_f = df_ind[df_ind['ÁREA'] == area_sel]
-    
     with st.form("reporte"):
         inputs = {}
         for idx, row in df_f.iterrows():
@@ -290,112 +366,30 @@ elif opcion == "📝 Reportar Indicador":
             st.markdown(f"**{row['INDICADOR']}** (Meta: {row['META_TEXTO']})")
             inputs[idx] = st.number_input("Resultado %", value=float(val)*100, step=0.1, key=idx)
             st.markdown("---")
-        
         if st.form_submit_button("Guardar"):
-            for i, v in inputs.items():
-                df_ind.at[i, mes_sel] = v / 100
-            st.session_state.df_ind = df_ind
-            guardar_datos_ind(df_ind)
-            st.success("Guardado.")
+            for i, v in inputs.items(): df_ind.at[i, mes_sel] = v / 100
+            st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
 
 # ==========================================
-# MODULO 3: DASHBOARD INDICADORES (OFICIAL)
+# MODULO 3: DASHBOARD INDICADORES
 # ==========================================
 elif opcion == "📊 Dashboard Indicadores (Oficial)":
-    st.header("Tablero de Mando - Indicadores Estratégicos")
-    
-    if area_permiso == 'TODAS':
-        df_view = df_ind
-    else:
-        df_view = df_ind[df_ind['ÁREA'] == area_permiso]
-        
-    kpi_sel = st.selectbox("Seleccione Indicador:", df_view['INDICADOR'].unique())
-    
+    st.header("Tablero de Mando - Indicadores")
+    df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
+    kpi_sel = st.selectbox("Indicador:", df_view['INDICADOR'].unique())
     row = df_ind[df_ind['INDICADOR'] == kpi_sel].iloc[0]
-    meta = row['META_VALOR']
-    logica = row['LOGICA']
-    
-    # Gráficos
+    meta = row['META_VALOR']; logica = row['LOGICA']
     y_data = [row[m] if pd.notna(row[m]) else None for m in MESES]
-    
-    # Tarjetas
     last_val = None
     for m in reversed(MESES):
-        if pd.notna(row[m]):
-            last_val = row[m]
-            break
-            
+        if pd.notna(row[m]): last_val = row[m]; break
     c1, c2 = st.columns(2)
     c1.metric("Meta", row['META_TEXTO'])
     if last_val is not None:
-        delta_color = "normal" if logica == 'MAX' else "inverse"
-        c2.metric("Último Resultado", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=delta_color)
-    else:
-        c2.metric("Último Resultado", "Sin Datos")
-        
+        color = "normal" if logica == 'MAX' else "inverse"
+        c2.metric("Último", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=color)
+    else: c2.metric("Último", "Sin Datos")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
     fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
-    fig.update_layout(template="plotly_white", yaxis_tickformat='.0%')
-    st.plotly_chart(fig, use_container_width=True)
-
-# ==========================================
-# MODULO 4: TABLERO OPERATIVO (MASTER)
-# ==========================================
-elif opcion == "📈 Tablero Operativo (Data Master)":
-    st.header("Tablero Operativo - Consolidado")
-    
-    if faltantes_master:
-        st.warning("Faltan algunos archivos operativos en el repositorio (Mostrando datos parciales)")
-    
-    # Filtros de Tiempo
-    anios = [2025, 2026]
-    meses_dict = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
-    
-    c1, c2 = st.columns(2)
-    anio_sel = c1.selectbox("Año Op.", anios)
-    mes_sel = c2.selectbox("Mes Op.", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], index=10 if anio_sel==2025 else 0)
-    
-    # Filtrado y KPI (Lógica de app_master.py)
-    def get_kpi(df, col_keywords):
-        if df.empty: return 0
-        if 'AÑO' in df.columns and 'MES' in df.columns:
-            mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
-            df_filtered = df[mask]
-            if df_filtered.empty: return 0
-            target_col = next((c for c in df.columns if any(k in c for k in col_keywords)), None)
-            if target_col:
-                if df_filtered[target_col].dtype == object:
-                     return pd.to_numeric(df_filtered[target_col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum()
-                return df_filtered[target_col].sum()
-        return 0
-
-    facturado = get_kpi(dfs_master['FACTURACION'], ['FACTURADO', 'VALOR FACTURADO'])
-    radicado = get_kpi(dfs_master['RADICACION'], ['RADICADO', 'VALOR RADICADO'])
-    brecha = facturado - radicado
-    recaudo = get_kpi(dfs_master['CARTERA'], ['RECAUDO REAL', 'REAL'])
-    meta_rec = get_kpi(dfs_master['CARTERA'], ['META'])
-    cump = (recaudo / meta_rec) if meta_rec > 0 else 0
-    
-    # Visualización KPIs
-    k1, k2, k3, k4 = st.columns(4)
-    
-    def kpi_card_html(title, val, is_pct=False, color="#0F1C3F"):
-        fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
-        return f"""<div class="kpi-card"><div class="kpi-title">{title}</div><div class="kpi-value" style="color:{color}">{fmt}</div></div>"""
-    
-    with k1: st.markdown(kpi_card_html("Facturado", facturado), unsafe_allow_html=True)
-    with k2: st.markdown(kpi_card_html("Radicado", radicado), unsafe_allow_html=True)
-    with k3: st.markdown(kpi_card_html("Recaudo Real", recaudo), unsafe_allow_html=True)
-    with k4: st.markdown(kpi_card_html("% Cumplimiento", cump, True, "green" if cump >= 0.9 else "orange"), unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # Detalle Facturación
-    st.subheader("Detalle Facturación del Mes")
-    df_fac = dfs_master['FACTURACION']
-    if not df_fac.empty and 'AÑO' in df_fac.columns:
-        mask = (df_fac['AÑO'] == anio_sel) & (df_fac['MES'] == mes_sel)
-        st.dataframe(df_fac[mask], use_container_width=True, hide_index=True)
-    else:
-        st.info("Sin datos de facturación para este periodo.")
+    fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
