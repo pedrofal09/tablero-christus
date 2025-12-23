@@ -234,64 +234,6 @@ with st.sidebar:
         st.session_state.user_info = None
         st.rerun()
     st.markdown("---")
-    
-    # --- SUBIDA DE ARCHIVOS (NUEVO) ---
-    if opcion == "📈 Tablero Operativo (Data Master)":
-        st.header("📂 Carga de Archivos")
-        st.info("Subir Excel/CSV para actualizar la data operativa.")
-        uploaded_file = st.file_uploader("Arrastra tu archivo aquí", type=['xlsx', 'csv'])
-        
-        if uploaded_file:
-            try:
-                # Determinar si es Excel o CSV y cargar
-                if uploaded_file.name.endswith('.xlsx'):
-                    xls = pd.ExcelFile(uploaded_file)
-                    # Iterar por hojas para buscar coincidencias con áreas
-                    for sheet_name in xls.sheet_names:
-                        # Buscar si el nombre de la hoja coincide con alguna clave
-                        for key in FILES_MASTER.keys():
-                            if key in sheet_name.upper():
-                                df_new = pd.read_excel(uploaded_file, sheet_name=sheet_name)
-                                # Normalización
-                                df_new.columns = df_new.columns.str.strip()
-                                # Asegurar columnas y tipos
-                                cols_req = ESTRUCTURA_COLUMNAS[key]
-                                for c in cols_req:
-                                    if c not in df_new.columns: df_new[c] = None
-                                df_new = df_new[cols_req]
-                                if 'AÑO' in df_new.columns: df_new['AÑO'] = pd.to_numeric(df_new['AÑO'], errors='coerce').fillna(0).astype(int)
-                                if 'MES' in df_new.columns: df_new['MES'] = pd.to_numeric(df_new['MES'], errors='coerce').fillna(0).astype(int)
-                                
-                                st.session_state.dfs_master[key] = df_new
-                                # Guardar en disco inmediatamente
-                                filename = FILES_MASTER[key]
-                                df_new.to_csv(filename, index=False)
-                                st.success(f"✅ {key} actualizado desde Excel")
-                else:
-                    # Es CSV, intentar adivinar área por nombre de archivo
-                    name = uploaded_file.name.upper()
-                    found_key = None
-                    for key in FILES_MASTER.keys():
-                        if key in name: found_key = key; break
-                    
-                    if found_key:
-                        df_new = pd.read_csv(uploaded_file)
-                        # Normalización similar
-                        df_new.columns = df_new.columns.str.strip()
-                        cols_req = ESTRUCTURA_COLUMNAS[found_key]
-                        for c in cols_req:
-                            if c not in df_new.columns: df_new[c] = None
-                        df_new = df_new[cols_req]
-                        
-                        st.session_state.dfs_master[found_key] = df_new
-                        filename = FILES_MASTER[found_key]
-                        df_new.to_csv(filename, index=False)
-                        st.success(f"✅ {found_key} actualizado desde CSV")
-                    else:
-                        st.error("No se pudo identificar el área por el nombre del archivo CSV.")
-                        
-            except Exception as e:
-                st.error(f"Error cargando archivo: {e}")
 
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
@@ -327,7 +269,7 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         
         def get_kpi(df, col_keywords):
             if df.empty: return 0
-            if 'AÑO' in df.columns and 'MES' in df.columns:
+            if 'AÑO' not in df.columns or 'MES' not in df.columns:
                 mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
                 df_filtered = df[mask]
                 if df_filtered.empty: return 0
@@ -399,6 +341,16 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         # Cargar DF completo de sesión
         df_full = st.session_state.dfs_master[dataset_name]
         
+        # --- FIX: Ensure AÑO and MES exist before filtering ---
+        if 'AÑO' not in df_full.columns:
+            df_full['AÑO'] = 0
+        if 'MES' not in df_full.columns:
+            df_full['MES'] = 0
+            
+        # Ensure correct types for filtering
+        df_full['AÑO'] = pd.to_numeric(df_full['AÑO'], errors='coerce').fillna(0).astype(int)
+        df_full['MES'] = pd.to_numeric(df_full['MES'], errors='coerce').fillna(0).astype(int)
+        
         # Filtrar solo el periodo seleccionado para editar
         if not df_full.empty:
             mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
@@ -409,8 +361,6 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         # Si está vacío el periodo, inicializar con estructura correcta para permitir pegar
         if df_periodo.empty:
             df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
-            # Pre-llenar año y mes para ayudar al usuario, aunque al pegar masivo se sobreescriba
-            # Es mejor dejar vacío para pegar bloque completo
         
         st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
         st.caption("Pegue aquí los datos desde Excel (Ctrl+V). Asegúrese de que las columnas coincidan.")
@@ -430,15 +380,26 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         # Botón Guardar (Lógica de Fusión)
         if st.button(f"💾 Guardar Periodo {edit_mes}/{edit_anio}"):
             # 1. Eliminar datos viejos de este periodo en el DF principal
-            df_clean = df_full[~((df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes))]
+            # Se usa una máscara segura
+            mask_old = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
+            df_clean = df_full[~mask_old]
             
-            # 2. Asegurar que los datos nuevos tengan el año/mes correcto (por seguridad)
+            # 2. Asegurar que los datos nuevos tengan el año/mes correcto
             # Si el usuario pegó datos sin año/mes, se los ponemos
             if not edited_periodo.empty:
                 if 'AÑO' in edited_periodo.columns:
                     edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
+                else:
+                    edited_periodo['AÑO'] = edit_anio
+                    
                 if 'MES' in edited_periodo.columns:
                     edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
+                else:
+                    edited_periodo['MES'] = edit_mes
+                    
+                # Fix specific for AÑO/MES being 0 or empty after paste if not mapped correctly
+                edited_periodo.loc[edited_periodo['AÑO'] == 0, 'AÑO'] = edit_anio
+                edited_periodo.loc[edited_periodo['MES'] == 0, 'MES'] = edit_mes
             
             # 3. Concatenar
             df_final = pd.concat([df_clean, edited_periodo], ignore_index=True)
