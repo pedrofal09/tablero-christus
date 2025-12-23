@@ -29,7 +29,7 @@ ESTRUCTURA_COLUMNAS = {
     'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
-    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades'] # Nota: Usamos MES_LETRAS para el segundo campo de mes
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades'] 
 }
 
 # --- DATOS MAESTROS (Indicadores Oficiales) ---
@@ -153,18 +153,13 @@ def cargar_datos_master_disco():
                 df.columns = df.columns.str.strip()
                 
                 # Mapeo de columnas si difieren ligeramente
-                # Especialmente el segundo MES en admisiones
                 if key == 'ADMISIONES':
-                    # Si hay columnas duplicadas, pandas las nombra MES, MES.1
                     df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
-                
-                # Normalización a mayúsculas para coincidir con estructura
-                # (Solo si no coincide exactamente, para evitar problemas de case)
                 
                 # Asegurar que existan todas las columnas requeridas
                 for col in cols_esperadas:
                     if col not in df.columns:
-                        df[col] = None # Crear vacía si falta
+                        df[col] = None 
                 
                 # Reordenar y filtrar columnas extrañas
                 df = df[cols_esperadas]
@@ -278,13 +273,7 @@ if opcion == "📈 Tablero Operativo (Data Master)":
                 mask = (df['AÑO'] == anio_sel) & (df['MES'] == mes_sel)
                 df_filtered = df[mask]
                 if df_filtered.empty: return 0
-                # Buscar columna exacta o aproximada
-                target_col = None
-                for c in df.columns:
-                    if any(k.upper() in c.upper() for k in col_keywords):
-                        target_col = c
-                        break
-                
+                target_col = next((c for c in df.columns if any(k in c for k in col_keywords)), None)
                 if target_col:
                     if df_filtered[target_col].dtype == object:
                          return pd.to_numeric(df_filtered[target_col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum()
@@ -338,30 +327,72 @@ if opcion == "📈 Tablero Operativo (Data Master)":
     # -----------------------------------------------
     with tab_edit:
         st.header("📝 Gestión de Datos Operativos")
-        st.info("Puede copiar y pegar datos masivamente desde Excel sobre la tabla. Asegúrese de que el orden de columnas coincida.")
+        st.info("Seleccione la base de datos a editar. Puede pegar datos masivamente desde Excel (Ctrl+V) sobre la tabla vacía o existente.")
         
-        # Selector de Dataset
-        dataset_name = st.selectbox("Seleccione Base de Datos a Editar:", list(FILES_MASTER.keys()))
+        col_sel, col_up = st.columns([1, 2])
         
-        # Cargar DF actual
+        with col_sel:
+            # Selector de Dataset
+            dataset_name = st.selectbox("Seleccione Base de Datos:", list(FILES_MASTER.keys()))
+        
+        with col_up:
+            # Opción de carga de archivo
+            uploaded_file = st.file_uploader(f"Opcional: Reemplazar {dataset_name} con un archivo (CSV/Excel)", type=['csv', 'xlsx'])
+        
+        # Lógica de carga de archivo nuevo
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_new = pd.read_csv(uploaded_file)
+                else:
+                    df_new = pd.read_excel(uploaded_file)
+                
+                # Normalización básica
+                df_new.columns = df_new.columns.str.strip()
+                # Asegurar columnas requeridas
+                cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
+                for c in cols_req:
+                    if c not in df_new.columns:
+                        df_new[c] = None
+                df_new = df_new[cols_req] # Ordenar
+                
+                st.session_state.dfs_master[dataset_name] = df_new
+                st.success("Archivo cargado exitosamente. Revise los datos abajo y guarde.")
+            except Exception as e:
+                st.error(f"Error al cargar archivo: {e}")
+
+        # Cargar DF actual de sesión
         df_edit = st.session_state.dfs_master[dataset_name]
         
-        # Mostrar estructura esperada
-        cols_esperadas = ESTRUCTURA_COLUMNAS[dataset_name]
-        st.caption(f"Columnas requeridas: {', '.join(cols_esperadas)}")
+        # Asegurar que tenga la estructura correcta para el editor (si estaba vacío)
+        if df_edit.empty:
+            df_edit = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
         
-        # Editor interactivo
-        edited_df = st.data_editor(df_edit, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}")
+        # Editor interactivo con num_rows="dynamic" para permitir agregar filas al pegar
+        st.markdown(f"**Editando: {dataset_name}**")
+        edited_df = st.data_editor(
+            df_edit,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"editor_{dataset_name}",
+            column_config={
+                "AÑO": st.column_config.NumberColumn(format="%d"),
+                "MES": st.column_config.NumberColumn(format="%d"),
+            }
+        )
         
         # Botón Guardar
         if st.button(f"💾 Guardar Cambios en {dataset_name}"):
+            # Actualizar sesión
             st.session_state.dfs_master[dataset_name] = edited_df
-            # Guardar en disco (CSV)
+            
+            # Guardar en disco (CSV) para persistencia
             filename = FILES_MASTER[dataset_name]
             edited_df.to_csv(filename, index=False)
-            st.success(f"¡Datos de {dataset_name} actualizados correctamente!")
+            
+            st.success(f"¡Datos de {dataset_name} guardados y KPIs actualizados!")
             time.sleep(1)
-            st.rerun()
+            st.rerun() # Recargar para actualizar KPIs
 
 # ==========================================
 # MODULO 1: ADMIN USUARIOS (Igual al anterior)
