@@ -323,76 +323,76 @@ if opcion == "📈 Tablero Operativo (Data Master)":
             st.info("Sin datos para este periodo.")
 
     # -----------------------------------------------
-    # PESTAÑA 2: EDITOR DE DATOS (NUEVO)
+    # PESTAÑA 2: EDITOR DE DATOS (NUEVO CON FILTRO)
     # -----------------------------------------------
     with tab_edit:
-        st.header("📝 Gestión de Datos Operativos")
-        st.info("Seleccione la base de datos a editar. Puede pegar datos masivamente desde Excel (Ctrl+V) sobre la tabla vacía o existente.")
+        st.header("📝 Gestión de Datos Operativos (Por Periodo)")
+        st.info("Seleccione el periodo específico que desea editar o cargar. Esto evita cargar todo el histórico.")
         
-        col_sel, col_up = st.columns([1, 2])
+        col_db, col_anio, col_mes = st.columns([2, 1, 1])
         
-        with col_sel:
-            # Selector de Dataset
-            dataset_name = st.selectbox("Seleccione Base de Datos:", list(FILES_MASTER.keys()))
+        with col_db:
+            dataset_name = st.selectbox("Base de Datos:", list(FILES_MASTER.keys()))
+        with col_anio:
+            edit_anio = st.selectbox("Año Edición:", [2025, 2026])
+        with col_mes:
+            edit_mes = st.selectbox("Mes Edición:", list(range(1, 13)), index=10) # Default Nov
+            
+        # Cargar DF completo de sesión
+        df_full = st.session_state.dfs_master[dataset_name]
         
-        with col_up:
-            # Opción de carga de archivo
-            uploaded_file = st.file_uploader(f"Opcional: Reemplazar {dataset_name} con un archivo (CSV/Excel)", type=['csv', 'xlsx'])
+        # Filtrar solo el periodo seleccionado para editar
+        if not df_full.empty:
+            mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
+            df_periodo = df_full[mask_edit].copy()
+        else:
+            df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
+            
+        # Si está vacío el periodo, inicializar con estructura correcta para permitir pegar
+        if df_periodo.empty:
+            df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
+            # Pre-llenar año y mes para ayudar al usuario, aunque al pegar masivo se sobreescriba
+            # Es mejor dejar vacío para pegar bloque completo
         
-        # Lógica de carga de archivo nuevo
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df_new = pd.read_csv(uploaded_file)
-                else:
-                    df_new = pd.read_excel(uploaded_file)
-                
-                # Normalización básica
-                df_new.columns = df_new.columns.str.strip()
-                # Asegurar columnas requeridas
-                cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
-                for c in cols_req:
-                    if c not in df_new.columns:
-                        df_new[c] = None
-                df_new = df_new[cols_req] # Ordenar
-                
-                st.session_state.dfs_master[dataset_name] = df_new
-                st.success("Archivo cargado exitosamente. Revise los datos abajo y guarde.")
-            except Exception as e:
-                st.error(f"Error al cargar archivo: {e}")
-
-        # Cargar DF actual de sesión
-        df_edit = st.session_state.dfs_master[dataset_name]
+        st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
+        st.caption("Pegue aquí los datos desde Excel (Ctrl+V). Asegúrese de que las columnas coincidan.")
         
-        # Asegurar que tenga la estructura correcta para el editor (si estaba vacío)
-        if df_edit.empty:
-            df_edit = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
-        
-        # Editor interactivo con num_rows="dynamic" para permitir agregar filas al pegar
-        st.markdown(f"**Editando: {dataset_name}**")
-        edited_df = st.data_editor(
-            df_edit,
+        # Editor
+        edited_periodo = st.data_editor(
+            df_periodo,
             num_rows="dynamic",
             use_container_width=True,
-            key=f"editor_{dataset_name}",
+            key=f"editor_{dataset_name}_{edit_anio}_{edit_mes}",
             column_config={
-                "AÑO": st.column_config.NumberColumn(format="%d"),
-                "MES": st.column_config.NumberColumn(format="%d"),
+                "AÑO": st.column_config.NumberColumn(format="%d", disabled=False),
+                "MES": st.column_config.NumberColumn(format="%d", disabled=False),
             }
         )
         
-        # Botón Guardar
-        if st.button(f"💾 Guardar Cambios en {dataset_name}"):
-            # Actualizar sesión
-            st.session_state.dfs_master[dataset_name] = edited_df
+        # Botón Guardar (Lógica de Fusión)
+        if st.button(f"💾 Guardar Periodo {edit_mes}/{edit_anio}"):
+            # 1. Eliminar datos viejos de este periodo en el DF principal
+            df_clean = df_full[~((df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes))]
             
-            # Guardar en disco (CSV) para persistencia
+            # 2. Asegurar que los datos nuevos tengan el año/mes correcto (por seguridad)
+            # Si el usuario pegó datos sin año/mes, se los ponemos
+            if not edited_periodo.empty:
+                if 'AÑO' in edited_periodo.columns:
+                    edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
+                if 'MES' in edited_periodo.columns:
+                    edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
+            
+            # 3. Concatenar
+            df_final = pd.concat([df_clean, edited_periodo], ignore_index=True)
+            
+            # 4. Actualizar sesión y disco
+            st.session_state.dfs_master[dataset_name] = df_final
             filename = FILES_MASTER[dataset_name]
-            edited_df.to_csv(filename, index=False)
+            df_final.to_csv(filename, index=False)
             
-            st.success(f"¡Datos de {dataset_name} guardados y KPIs actualizados!")
+            st.success(f"¡Datos del periodo {edit_mes}/{edit_anio} guardados exitosamente!")
             time.sleep(1)
-            st.rerun() # Recargar para actualizar KPIs
+            st.rerun()
 
 # ==========================================
 # MODULO 1: ADMIN USUARIOS (Igual al anterior)
