@@ -234,6 +234,64 @@ with st.sidebar:
         st.session_state.user_info = None
         st.rerun()
     st.markdown("---")
+    
+    # --- SUBIDA DE ARCHIVOS (NUEVO) ---
+    if opcion == "📈 Tablero Operativo (Data Master)":
+        st.header("📂 Carga de Archivos")
+        st.info("Subir Excel/CSV para actualizar la data operativa.")
+        uploaded_file = st.file_uploader("Arrastra tu archivo aquí", type=['xlsx', 'csv'])
+        
+        if uploaded_file:
+            try:
+                # Determinar si es Excel o CSV y cargar
+                if uploaded_file.name.endswith('.xlsx'):
+                    xls = pd.ExcelFile(uploaded_file)
+                    # Iterar por hojas para buscar coincidencias con áreas
+                    for sheet_name in xls.sheet_names:
+                        # Buscar si el nombre de la hoja coincide con alguna clave
+                        for key in FILES_MASTER.keys():
+                            if key in sheet_name.upper():
+                                df_new = pd.read_excel(uploaded_file, sheet_name=sheet_name)
+                                # Normalización
+                                df_new.columns = df_new.columns.str.strip()
+                                # Asegurar columnas y tipos
+                                cols_req = ESTRUCTURA_COLUMNAS[key]
+                                for c in cols_req:
+                                    if c not in df_new.columns: df_new[c] = None
+                                df_new = df_new[cols_req]
+                                if 'AÑO' in df_new.columns: df_new['AÑO'] = pd.to_numeric(df_new['AÑO'], errors='coerce').fillna(0).astype(int)
+                                if 'MES' in df_new.columns: df_new['MES'] = pd.to_numeric(df_new['MES'], errors='coerce').fillna(0).astype(int)
+                                
+                                st.session_state.dfs_master[key] = df_new
+                                # Guardar en disco inmediatamente
+                                filename = FILES_MASTER[key]
+                                df_new.to_csv(filename, index=False)
+                                st.success(f"✅ {key} actualizado desde Excel")
+                else:
+                    # Es CSV, intentar adivinar área por nombre de archivo
+                    name = uploaded_file.name.upper()
+                    found_key = None
+                    for key in FILES_MASTER.keys():
+                        if key in name: found_key = key; break
+                    
+                    if found_key:
+                        df_new = pd.read_csv(uploaded_file)
+                        # Normalización similar
+                        df_new.columns = df_new.columns.str.strip()
+                        cols_req = ESTRUCTURA_COLUMNAS[found_key]
+                        for c in cols_req:
+                            if c not in df_new.columns: df_new[c] = None
+                        df_new = df_new[cols_req]
+                        
+                        st.session_state.dfs_master[found_key] = df_new
+                        filename = FILES_MASTER[found_key]
+                        df_new.to_csv(filename, index=False)
+                        st.success(f"✅ {found_key} actualizado desde CSV")
+                    else:
+                        st.error("No se pudo identificar el área por el nombre del archivo CSV.")
+                        
+            except Exception as e:
+                st.error(f"Error cargando archivo: {e}")
 
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
