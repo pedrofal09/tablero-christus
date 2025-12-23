@@ -29,7 +29,7 @@ ESTRUCTURA_COLUMNAS = {
     'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
-    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades'] 
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'] 
 }
 
 # --- DATOS MAESTROS (Indicadores Oficiales) ---
@@ -154,7 +154,10 @@ def cargar_datos_master_disco():
                 
                 # Mapeo de columnas si difieren ligeramente
                 if key == 'ADMISIONES':
+                    # Si hay columnas duplicadas, pandas las nombra MES, MES.1
                     df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
+                
+                # Normalización a mayúsculas para coincidir con estructura
                 
                 # Asegurar que existan todas las columnas requeridas
                 for col in cols_esperadas:
@@ -363,7 +366,35 @@ if opcion == "📈 Tablero Operativo (Data Master)":
             df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
         
         st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
-        st.caption("Pegue aquí los datos desde Excel (Ctrl+V). Asegúrese de que las columnas coincidan.")
+        
+        # 1. Opción de Subir Archivo para este mes
+        uploaded_file = st.file_uploader(f"Cargar CSV/Excel para {dataset_name} ({edit_mes}/{edit_anio})", type=['csv', 'xlsx'])
+        
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df_upload = pd.read_csv(uploaded_file)
+                else:
+                    df_upload = pd.read_excel(uploaded_file)
+                
+                # Normalizar y filtrar columnas
+                df_upload.columns = df_upload.columns.str.strip()
+                cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
+                for c in cols_req:
+                    if c not in df_upload.columns: df_upload[c] = None
+                df_upload = df_upload[cols_req]
+                
+                # Asignar año/mes seleccionado si no vienen o están vacíos
+                df_upload['AÑO'] = edit_anio
+                df_upload['MES'] = edit_mes
+                
+                # Reemplazar df_periodo para mostrar en el editor
+                df_periodo = df_upload
+                st.success("Archivo cargado en vista previa. Revise abajo y guarde.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+        st.caption("También puede pegar datos desde Excel (Ctrl+V) en la tabla vacía.")
         
         # Editor
         edited_periodo = st.data_editor(
