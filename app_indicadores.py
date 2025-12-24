@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import os
 import time
+from PIL import Image
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -18,10 +19,12 @@ ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
 ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv'
 
+# Archivos de Imagen Configurables
+LOGO_FILENAME = 'logo_config.png'
+LOGIN_IMAGE_FILENAME = 'login_image.png'
+
 # URL del Logo (Respaldo online)
-LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
-# Nombre de archivo local si el usuario lo descarga (puedes renombrar tu imagen a logo.png)
-LOGO_LOCAL = "logo.png" 
+LOGO_DEFAULT_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
 
 # Nombres de archivos operativos (MASTER)
 FILES_MASTER = {
@@ -236,6 +239,15 @@ def guardar_datos_master_disco(dfs):
         filename = FILES_MASTER[key]
         df.to_csv(filename, index=False)
 
+# Función para guardar imagen cargada
+def save_uploaded_image(uploaded_file, filename):
+    try:
+        with open(filename, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return True
+    except:
+        return False
+
 if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
@@ -250,7 +262,12 @@ if 'user_info' not in st.session_state:
 if st.session_state.user_info is None:
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
-        st.markdown("<h1 style='text-align: center; color: #663399;'>🏥 Christus Health</h1>", unsafe_allow_html=True)
+        # Mostrar Imagen de Login si existe
+        if os.path.exists(LOGIN_IMAGE_FILENAME):
+            st.image(LOGIN_IMAGE_FILENAME, use_column_width=True)
+        else:
+            st.markdown("<h1 style='text-align: center; color: #663399;'>🏥 Christus Health</h1>", unsafe_allow_html=True)
+            
         st.markdown("<h3 style='text-align: center;'>Acceso al Sistema Integrado</h3>", unsafe_allow_html=True)
         st.markdown("---")
         with st.form("login"):
@@ -273,13 +290,13 @@ area_permiso = user['AREA_ACCESO']
 
 # --- SIDEBAR ---
 with st.sidebar:
-    # Logo Inteligente (Local o URL)
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=200)
+    # Logo Inteligente (Configurado o Default)
+    if os.path.exists(LOGO_FILENAME):
+        st.image(LOGO_FILENAME, width=200)
     else:
-        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=180)
+        st.image(LOGO_DEFAULT_URL, width=180)
     
-    st.markdown(f"### Hola, {user['USUARIO']}")
+    st.subheader(f"👤 {user['USUARIO']}")
     st.caption(f"Rol: **{rol}**")
     if st.button("Cerrar Sesión"):
         st.session_state.user_info = None
@@ -302,24 +319,21 @@ if rol == 'ADMIN':
 opcion = st.sidebar.radio("Navegación:", menu)
 
 # --- CABECERA COMÚN ---
-# Si existe logo local lo usa, sino URL
-logo_src = "logo.png" if os.path.exists("logo.png") else "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
-
-st.markdown(f"""
-    <div class="header-container">
-        <img src="{logo_src}" class="header-logo" style="height: 50px; vertical-align: middle; margin-right: 15px;">
-        <span class="header-title" style="font-size: 28px; font-weight: bold; color: #663399; vertical-align: middle;">
-            {opcion.replace('📊 ', '').replace('📈 ', '').replace('📝 ', '').replace('⚙️ ', '')}
-        </span>
-    </div>
-""", unsafe_allow_html=True)
+logo_src = LOGO_FILENAME if os.path.exists(LOGO_FILENAME) else LOGO_DEFAULT_URL
+# Para mostrar imagen local en HTML puro a veces requiere base64, aquí usamos st.image en columna para simpleza o mantenemos la estructura
+# Streamlit maneja mejor las imagenes con st.image, simularemos el header con columnas
+h1, h2 = st.columns([1, 6])
+with h1:
+    st.image(logo_src, width=80)
+with h2:
+    st.markdown(f"<h1 style='color: #663399; margin-top: -10px;'>{opcion.replace('📊 ', '').replace('📈 ', '').replace('📝 ', '').replace('⚙️ ', '')}</h1>", unsafe_allow_html=True)
 
 
 # ==========================================
 # MODULO 1: ADMINISTRACIÓN
 # ==========================================
 if opcion == "⚙️ Administración":
-    tab_users, tab_kpis = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores"])
+    tab_users, tab_kpis, tab_config = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores", "🖼️ Configuración Visual"])
     
     with tab_users:
         df_users = cargar_usuarios()
@@ -357,6 +371,40 @@ if opcion == "⚙️ Administración":
             st.session_state.df_ind = cargar_datos_ind()
             st.success("Actualizado."); time.sleep(1); st.rerun()
 
+    with tab_config:
+        st.subheader("Personalización de Marca")
+        st.info("Sube las imágenes corporativas aquí (Formatos: PNG, JPG).")
+        
+        c_logo, c_login = st.columns(2)
+        
+        with c_logo:
+            st.markdown("### Logo Principal (Barra Lateral)")
+            logo_file = st.file_uploader("Subir Logo", type=['png', 'jpg', 'jpeg'], key="up_logo")
+            if logo_file:
+                if save_uploaded_image(logo_file, LOGO_FILENAME):
+                    st.success("Logo actualizado.")
+                    st.image(LOGO_FILENAME, width=150)
+                    time.sleep(1); st.rerun()
+            elif os.path.exists(LOGO_FILENAME):
+                st.image(LOGO_FILENAME, width=150)
+                if st.button("Restaurar Logo Default"):
+                    os.remove(LOGO_FILENAME)
+                    st.rerun()
+
+        with c_login:
+            st.markdown("### Imagen Pantalla Login")
+            login_file = st.file_uploader("Subir Imagen Login", type=['png', 'jpg', 'jpeg'], key="up_login")
+            if login_file:
+                if save_uploaded_image(login_file, LOGIN_IMAGE_FILENAME):
+                    st.success("Imagen de login actualizada.")
+                    st.image(LOGIN_IMAGE_FILENAME, width=200)
+                    time.sleep(1); st.rerun()
+            elif os.path.exists(LOGIN_IMAGE_FILENAME):
+                st.image(LOGIN_IMAGE_FILENAME, width=200)
+                if st.button("Quitar Imagen Login"):
+                    os.remove(LOGIN_IMAGE_FILENAME)
+                    st.rerun()
+
 # ==========================================
 # MODULO 2: REPORTE INDICADORES
 # ==========================================
@@ -379,7 +427,7 @@ elif opcion == "📝 Reportar Indicador":
             st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
 
 # ==========================================
-# MODULO 3: DASHBOARD INDICADORES
+# MODULO 3: DASHBOARD INDICADORES (OFICIAL)
 # ==========================================
 elif opcion == "📊 Dashboard Indicadores (Oficial)":
     df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
