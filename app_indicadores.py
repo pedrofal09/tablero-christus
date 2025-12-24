@@ -93,6 +93,18 @@ st.markdown("""
     }
     .kpi-title { font-size: 13px; color: #6c757d; font-weight: 600; text-transform: uppercase; }
     .kpi-value { font-size: 22px; color: #0F1C3F; font-weight: bold; margin-top: 5px; }
+    
+    /* Estilo para el Logo en el Sidebar */
+    .sidebar .sidebar-content {
+        background-color: #f0f2f6;
+    }
+    .logo-container {
+        text-align: center;
+        margin-bottom: 20px;
+    }
+    .logo-img {
+        max-width: 80%;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -251,10 +263,9 @@ rol = user['ROL']
 area_permiso = user['AREA_ACCESO']
 
 with st.sidebar:
-    try:
-        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=150)
-    except:
-        st.write("🏥 **CHRISTUS HEALTH**")
+    # Logo
+    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=180)
+    
     st.subheader(f"👤 {user['USUARIO']}")
     st.caption(f"Rol: {rol}")
     if st.button("Cerrar Sesión"):
@@ -383,11 +394,11 @@ elif opcion == "📊 Dashboard Indicadores (Oficial)":
         if last_val is not None:
             color = "normal" if logica == 'MAX' else "inverse"
             c2.metric("Último", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=color)
-        else: c2.metric("Último", "Sin Datos")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
-        fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
-        fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
+    else: c2.metric("Último", "Sin Datos")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
+    fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
+    fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
 # MODULO 4: TABLERO OPERATIVO (MASTER) - CON EDITOR
