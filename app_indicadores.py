@@ -6,14 +6,24 @@ import os
 import time
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Tablero Ciclo de Ingresos Integrado", layout="wide", page_icon="🏥")
+st.set_page_config(
+    page_title="Tablero Ciclo de Ingresos Christus", 
+    layout="wide", 
+    page_icon="🏥",
+    initial_sidebar_state="expanded"
+)
 
 # --- ARCHIVOS DE CONFIGURACIÓN ---
 ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
 ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv'
 
-# Nombres de archivos operativos (MASTER) - Ajustado a tus nombres reales
+# URL del Logo (Respaldo online)
+LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
+# Nombre de archivo local si el usuario lo descarga (puedes renombrar tu imagen a logo.png)
+LOGO_LOCAL = "logo.png" 
+
+# Nombres de archivos operativos (MASTER)
 FILES_MASTER = {
     'ADMISIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - ADMISIONES.csv',
     'AUTORIZACIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - AUTORIZACIONES.csv',
@@ -31,7 +41,7 @@ ESTRUCTURA_COLUMNAS = {
     'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
-    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'], # Ajustado MES duplicado en tu CSV
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'],
     'PROVISION': [
         'AÑO', 'MES', 'Aseguradora', 'Fecha Corte', 
         'Prov. Acostados', 'Prov. Ambulatorios', 'Prov. Egresados', 
@@ -39,7 +49,7 @@ ESTRUCTURA_COLUMNAS = {
     ]
 }
 
-# --- DATOS MAESTROS (Indicadores Oficiales) ---
+# --- DATOS MAESTROS INICIALES ---
 DATOS_MAESTROS_IND_INICIAL = [
     # FACTURACIÓN
     ['FACTURACIÓN', 'Dir. Facturación', 'Facturación oportuna (≤72h egreso)', 0.95, 'MAX', '>95%'],
@@ -83,27 +93,45 @@ MESES = ['NOV-25', 'DIC-25', 'ENE-26', 'FEB-26', 'MAR-26', 'ABR-26', 'MAY-26',
 st.markdown("""
     <style>
     .kpi-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+        background-color: #ffffff;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         text-align: center;
-        border-top: 3px solid #0F1C3F;
-        margin-bottom: 10px;
+        border-left: 5px solid #663399; /* Morado Christus */
+        transition: transform 0.2s;
     }
-    .kpi-title { font-size: 13px; color: #6c757d; font-weight: 600; text-transform: uppercase; }
-    .kpi-value { font-size: 22px; color: #0F1C3F; font-weight: bold; margin-top: 5px; }
-    
-    /* Estilo para el Logo en el Sidebar */
-    .sidebar .sidebar-content {
-        background-color: #f0f2f6;
+    .kpi-card:hover {
+        transform: translateY(-5px);
     }
-    .logo-container {
-        text-align: center;
+    .kpi-title {
+        font-size: 14px;
+        color: #6c757d;
+        text-transform: uppercase;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    .kpi-value {
+        font-size: 28px;
+        color: #2c3e50;
+        font-weight: 900;
+    }
+    /* Encabezado */
+    .header-container {
+        display: flex;
+        align-items: center;
+        padding-bottom: 20px;
+        border-bottom: 2px solid #663399;
         margin-bottom: 20px;
     }
-    .logo-img {
-        max-width: 80%;
+    .header-logo {
+        height: 60px;
+        margin-right: 20px;
+    }
+    .header-title {
+        font-size: 32px;
+        color: #663399;
+        font-weight: bold;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -133,12 +161,10 @@ def autenticar(usuario, password):
             return user_row.iloc[0]
     return None
 
-# --- Funciones para Maestros de Indicadores ---
 def cargar_maestro_indicadores():
     if os.path.exists(ARCHIVO_MAESTRO_INDICADORES):
         return pd.read_csv(ARCHIVO_MAESTRO_INDICADORES)
     else:
-        # Crear archivo inicial
         df = pd.DataFrame(DATOS_MAESTROS_IND_INICIAL, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
         df.to_csv(ARCHIVO_MAESTRO_INDICADORES, index=False)
         return df
@@ -146,9 +172,7 @@ def cargar_maestro_indicadores():
 def guardar_maestro_indicadores(df):
     df.to_csv(ARCHIVO_MAESTRO_INDICADORES, index=False)
 
-# --- Funciones para Datos de Indicadores ---
 def inicializar_datos_ind(df_maestro):
-    # Usar el maestro actual para inicializar
     df = df_maestro.copy()
     for mes in MESES:
         df[mes] = None
@@ -156,13 +180,11 @@ def inicializar_datos_ind(df_maestro):
 
 def cargar_datos_ind():
     df_maestro = cargar_maestro_indicadores()
-    
     if os.path.exists(ARCHIVO_DATOS_INDICADORES):
         try:
             df_datos = pd.read_csv(ARCHIVO_DATOS_INDICADORES)
-            # Sincronizar con el maestro actual (si se agregaron/quitaron indicadores)
-            # 1. Mantener datos existentes
-            df_merged = pd.merge(df_maestro, df_datos[['INDICADOR'] + MESES], on='INDICADOR', how='left')
+            cols_datos = ['INDICADOR'] + [m for m in MESES if m in df_datos.columns]
+            df_merged = pd.merge(df_maestro, df_datos[cols_datos], on='INDICADOR', how='left')
             return df_merged
         except:
             return inicializar_datos_ind(df_maestro)
@@ -171,15 +193,12 @@ def cargar_datos_ind():
 def guardar_datos_ind(df):
     df.to_csv(ARCHIVO_DATOS_INDICADORES, index=False)
 
-# --- Funciones para Tablero Operativo (MASTER) ---
 def cargar_datos_master_disco():
     data = {}
     missing = []
     
     for key, filename in FILES_MASTER.items():
-        # Definir estructura esperada
         cols_esperadas = ESTRUCTURA_COLUMNAS.get(key, ['AÑO', 'MES'])
-        
         if os.path.exists(filename):
             try:
                 try:
@@ -188,42 +207,24 @@ def cargar_datos_master_disco():
                 except:
                     df = pd.read_csv(filename, sep=';', encoding='latin1')
                 
-                # Limpieza de nombres de columnas
                 df.columns = df.columns.str.strip()
-                
-                # Mapeo de columnas si difieren ligeramente
                 if key == 'ADMISIONES':
-                    # Manejo de columnas duplicadas de MES en tu CSV original
-                    # Renombramos la segunda columna de mes si existe
-                    cols_list = list(df.columns)
-                    if cols_list.count('MES') > 1:
-                        # Encontrar el indice del segundo 'MES' y renombrarlo
-                        indices = [i for i, x in enumerate(cols_list) if x == 'MES']
-                        if len(indices) > 1:
-                            cols_list[indices[1]] = 'MES_LETRAS'
-                            df.columns = cols_list
+                    df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
                 
-                # Asegurar que existan todas las columnas requeridas
                 for col in cols_esperadas:
-                    if col not in df.columns:
-                        df[col] = None 
-                
-                # Reordenar y filtrar columnas extrañas
+                    if col not in df.columns: df[col] = None 
                 df = df[cols_esperadas]
                 
-                # Limpieza numérica
                 for col in df.columns:
                     if df[col].dtype == object:
                         if df[col].astype(str).str.contains(r'\$').any():
                             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
                 
-                # Asegurar AÑO y MES
                 if 'AÑO' in df.columns: df['AÑO'] = pd.to_numeric(df['AÑO'], errors='coerce').fillna(0).astype(int)
                 if 'MES' in df.columns: df['MES'] = pd.to_numeric(df['MES'], errors='coerce').fillna(0).astype(int)
                 
                 data[key] = df
-            except Exception as e:
-                # Si falla, crear estructura vacía correcta
+            except:
                 data[key] = pd.DataFrame(columns=cols_esperadas)
         else:
             missing.append(filename)
@@ -235,7 +236,6 @@ def guardar_datos_master_disco(dfs):
         filename = FILES_MASTER[key]
         df.to_csv(filename, index=False)
 
-# Inicializar sesión de datos master
 if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
@@ -243,15 +243,16 @@ if 'dfs_master' not in st.session_state:
 # LÓGICA DE LA APLICACIÓN
 # ==============================================================================
 
-# --- ESTADO DE SESIÓN ---
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
 
 # --- LOGIN ---
 if st.session_state.user_info is None:
-    st.title("🔐 Acceso al Sistema Integrado")
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
+        st.markdown("<h1 style='text-align: center; color: #663399;'>🏥 Christus Health</h1>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center;'>Acceso al Sistema Integrado</h3>", unsafe_allow_html=True)
+        st.markdown("---")
         with st.form("login"):
             user_in = st.text_input("Usuario")
             pass_in = st.text_input("Contraseña", type="password")
@@ -270,44 +271,59 @@ user = st.session_state.user_info
 rol = user['ROL']
 area_permiso = user['AREA_ACCESO']
 
+# --- SIDEBAR ---
 with st.sidebar:
-    # Logo
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=180)
+    # Logo Inteligente (Local o URL)
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=200)
+    else:
+        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png", width=180)
     
-    st.subheader(f"👤 {user['USUARIO']}")
-    st.caption(f"Rol: {rol}")
+    st.markdown(f"### Hola, {user['USUARIO']}")
+    st.caption(f"Rol: **{rol}**")
     if st.button("Cerrar Sesión"):
         st.session_state.user_info = None
         st.rerun()
     st.markdown("---")
 
-# Cargar datos de indicadores (usando el maestro)
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
 df_ind = st.session_state.df_ind
 
-# --- MENÚ ---
+if 'dfs_master' not in st.session_state:
+    st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
+
 menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Master)"]
 if rol in ['ADMIN', 'LIDER']:
     menu.append("📝 Reportar Indicador")
 if rol == 'ADMIN':
-    menu.append("⚙️ Administración") # Unificado usuarios e indicadores
+    menu.append("⚙️ Administración")
 
 opcion = st.sidebar.radio("Navegación:", menu)
 
+# --- CABECERA COMÚN ---
+# Si existe logo local lo usa, sino URL
+logo_src = "logo.png" if os.path.exists("logo.png") else "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
+
+st.markdown(f"""
+    <div class="header-container">
+        <img src="{logo_src}" class="header-logo" style="height: 50px; vertical-align: middle; margin-right: 15px;">
+        <span class="header-title" style="font-size: 28px; font-weight: bold; color: #663399; vertical-align: middle;">
+            {opcion.replace('📊 ', '').replace('📈 ', '').replace('📝 ', '').replace('⚙️ ', '')}
+        </span>
+    </div>
+""", unsafe_allow_html=True)
+
+
 # ==========================================
-# MODULO 1: ADMINISTRACIÓN (Usuarios e Indicadores)
+# MODULO 1: ADMINISTRACIÓN
 # ==========================================
 if opcion == "⚙️ Administración":
-    st.title("Panel de Administración")
-    
     tab_users, tab_kpis = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores"])
     
-    # --- PESTAÑA USUARIOS ---
     with tab_users:
         df_users = cargar_usuarios()
         st.dataframe(df_users, hide_index=True, use_container_width=True)
-        
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Crear Usuario")
@@ -327,48 +343,30 @@ if opcion == "⚙️ Administración":
                     df_users = df_users[df_users['USUARIO'] != u_del]
                     guardar_usuarios(df_users); st.success("Eliminado"); st.rerun()
 
-    # --- PESTAÑA INDICADORES (NUEVO) ---
     with tab_kpis:
         st.subheader("Gestión Maestra de Indicadores")
-        st.info("Aquí puede editar las metas, agregar nuevos indicadores o eliminar existentes.")
-        
-        # Cargar maestro actual
         df_maestro = cargar_maestro_indicadores()
-        
-        # Editor interactivo
         edited_maestro = st.data_editor(
-            df_maestro,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="editor_maestro_kpi",
-            column_config={
-                "LOGICA": st.column_config.SelectboxColumn("Lógica", options=["MAX", "MIN"], required=True),
-                "META_VALOR": st.column_config.NumberColumn("Meta (Decimal)", format="%.2f")
-            }
+            df_maestro, num_rows="dynamic", use_container_width=True, key="editor_maestro_kpi",
+            column_config={"LOGICA": st.column_config.SelectboxColumn("Lógica", options=["MAX", "MIN"], required=True),
+                           "META_VALOR": st.column_config.NumberColumn("Meta (Decimal)", format="%.2f"),
+                           "ÁREA": st.column_config.SelectboxColumn("Área", options=list(df_maestro['ÁREA'].unique()))}
         )
-        
         if st.button("💾 Guardar Cambios en Indicadores"):
             guardar_maestro_indicadores(edited_maestro)
-            # Recargar los datos de reporte para reflejar cambios (añadir filas nuevas, quitar viejas)
-            st.session_state.df_ind = cargar_datos_ind() 
-            st.success("Maestro de indicadores actualizado. Los cambios se reflejarán en el reporte.")
-            time.sleep(1)
-            st.rerun()
+            st.session_state.df_ind = cargar_datos_ind()
+            st.success("Actualizado."); time.sleep(1); st.rerun()
 
 # ==========================================
 # MODULO 2: REPORTE INDICADORES
 # ==========================================
 elif opcion == "📝 Reportar Indicador":
-    st.header("Reporte Mensual Indicadores")
     areas_posibles = df_ind['ÁREA'].unique()
     if area_permiso != 'TODAS': areas_posibles = [a for a in areas_posibles if a == area_permiso]
     c1, c2 = st.columns(2)
     area_sel = c1.selectbox("Área:", areas_posibles)
     mes_sel = c2.selectbox("Mes:", MESES)
-    
-    # Filtrar DF de datos
     df_f = df_ind[df_ind['ÁREA'] == area_sel]
-    
     with st.form("reporte"):
         inputs = {}
         for idx, row in df_f.iterrows():
@@ -381,14 +379,11 @@ elif opcion == "📝 Reportar Indicador":
             st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
 
 # ==========================================
-# MODULO 3: DASHBOARD INDICADORES (OFICIAL)
+# MODULO 3: DASHBOARD INDICADORES
 # ==========================================
 elif opcion == "📊 Dashboard Indicadores (Oficial)":
-    st.header("Tablero de Mando - Indicadores")
     df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
-    
-    if df_view.empty:
-        st.warning("No hay indicadores asignados para visualizar.")
+    if df_view.empty: st.warning("No hay indicadores disponibles.")
     else:
         kpi_sel = st.selectbox("Indicador:", df_view['INDICADOR'].unique())
         row = df_ind[df_ind['INDICADOR'] == kpi_sel].iloc[0]
@@ -402,29 +397,20 @@ elif opcion == "📊 Dashboard Indicadores (Oficial)":
         if last_val is not None:
             color = "normal" if logica == 'MAX' else "inverse"
             c2.metric("Último", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=color)
-    else: c2.metric("Último", "Sin Datos")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
-    fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
-    fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
+        else: c2.metric("Último", "Sin Datos")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
+        fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
+        fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# MODULO 4: TABLERO OPERATIVO (MASTER) - CON EDITOR
+# MODULO 4: TABLERO OPERATIVO (MASTER)
 # ==========================================
 elif opcion == "📈 Tablero Operativo (Data Master)":
-    
     tab_vis, tab_edit = st.tabs(["📊 Visualización KPIs", "📝 Editor de Datos (Operativo)"])
     
-    # -----------------------------------------------
-    # PESTAÑA 1: VISUALIZACIÓN
-    # -----------------------------------------------
     with tab_vis:
-        st.header("Tablero Operativo - Consolidado")
-        
-        # Filtros de Tiempo
-        anios = [2025, 2026]
-        meses_dict = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
-        
+        anios = [2025, 2026]; meses_dict = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
         c1, c2 = st.columns(2)
         anio_sel = c1.selectbox("Año Op.", anios)
         mes_sel = c2.selectbox("Mes Op.", list(meses_dict.keys()), format_func=lambda x: meses_dict[x], index=10 if anio_sel==2025 else 0)
@@ -443,53 +429,40 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
             return 0
 
         dfs_m = st.session_state.dfs_master
-        
-        # KPIs Financieros
         facturado = get_kpi(dfs_m['FACTURACION'], ['Valor Facturado', 'FACTURADO'])
         radicado = get_kpi(dfs_m['RADICACION'], ['Valor Radicado', 'RADICADO'])
         brecha = facturado - radicado
         recaudo = get_kpi(dfs_m['CARTERA'], ['Recaudo Real', 'REAL'])
         meta_rec = get_kpi(dfs_m['CARTERA'], ['Meta Recaudo', 'META'])
         cump = (recaudo / meta_rec) if meta_rec > 0 else 0
-        
-        # KPIs Glosas
         glosa_inicial = get_kpi(dfs_m['GLOSAS'], ['Valor Glosa Inicial', 'INICIAL'])
         devoluciones = get_kpi(dfs_m['GLOSAS'], ['Valor Devoluciones', 'DEVOLUCIONES'])
         levantado = get_kpi(dfs_m['GLOSAS'], ['Valor Rechazado', 'Rechazado'])
         aceptado = get_kpi(dfs_m['GLOSAS'], ['Valor Aceptado', 'Aceptado'])
-
-        # KPIs Provisión (NUEVO)
         prov_acostados = get_kpi(dfs_m['PROVISION'], ['Prov. Acostados', 'Acostados'])
         prov_ambulatorios = get_kpi(dfs_m['PROVISION'], ['Prov. Ambulatorios', 'Ambulatorios'])
         prov_egresados = get_kpi(dfs_m['PROVISION'], ['Prov. Egresados', 'Egresados'])
-        
         sin_radicar = get_kpi(dfs_m['PROVISION'], ['Facturado Sin Radicar', 'Sin Radicar'])
         glosas_pend = get_kpi(dfs_m['PROVISION'], ['Valor Glosas Pendientes', 'Glosas Pendientes'])
-        cant_glosas_pend = get_kpi(dfs_m['PROVISION'], ['Cant. Glosas Pendientes'])
         
         def kpi_card_html(title, val, is_pct=False, color="#0F1C3F"):
             fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
             return f"""<div class="kpi-card"><div class="kpi-title">{title}</div><div class="kpi-value" style="color:{color}">{fmt}</div></div>"""
         
-        # FILA 1
         st.subheader("1. Desempeño Financiero")
         k1, k2, k3, k4 = st.columns(4)
         with k1: st.markdown(kpi_card_html("Facturado", facturado), unsafe_allow_html=True)
         with k2: st.markdown(kpi_card_html("Radicado", radicado), unsafe_allow_html=True)
         with k3: st.markdown(kpi_card_html("Recaudo Real", recaudo), unsafe_allow_html=True)
         with k4: st.markdown(kpi_card_html("% Cumplimiento", cump, True, "green" if cump >= 0.9 else "orange"), unsafe_allow_html=True)
-        
         st.markdown("---")
-        # FILA 2
         st.subheader("2. Gestión de Glosas Cerradas")
         g1, g2, g3, g4 = st.columns(4)
         with g1: st.markdown(kpi_card_html("Devoluciones", devoluciones), unsafe_allow_html=True)
         with g2: st.markdown(kpi_card_html("Glosa Inicial", glosa_inicial), unsafe_allow_html=True)
         with g3: st.markdown(kpi_card_html("Levantado (Recuperado)", levantado, False, "green"), unsafe_allow_html=True)
         with g4: st.markdown(kpi_card_html("Aceptado (Pérdida)", aceptado, False, "red"), unsafe_allow_html=True)
-
         st.markdown("---")
-        # FILA 3 (NUEVA)
         st.subheader("3. Análisis de Provisión y Pendientes")
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1: st.markdown(kpi_card_html("Prov. Acostados", prov_acostados), unsafe_allow_html=True)
@@ -497,131 +470,61 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
         with p3: st.markdown(kpi_card_html("Prov. Egresados", prov_egresados), unsafe_allow_html=True)
         with p4: st.markdown(kpi_card_html("Sin Radicar (Inc. Dev)", sin_radicar, False, "orange"), unsafe_allow_html=True)
         with p5: st.markdown(kpi_card_html("Glosas Pendientes", glosas_pend, False, "orange"), unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.subheader("Detalle Operativo (Facturación)")
-        df_fac = dfs_m['FACTURACION']
-        if not df_fac.empty and 'AÑO' in df_fac.columns:
-            mask = (df_fac['AÑO'] == anio_sel) & (df_fac['MES'] == mes_sel)
-            st.dataframe(df_fac[mask], use_container_width=True, hide_index=True)
-        else:
-            st.info("Sin datos para este periodo.")
 
-    # -----------------------------------------------
-    # PESTAÑA 2: EDITOR DE DATOS (NUEVO CON FILTRO)
-    # -----------------------------------------------
     with tab_edit:
         st.header("📝 Gestión de Datos Operativos (Por Periodo)")
-        st.info("Seleccione el periodo específico que desea editar o cargar. Esto evita cargar todo el histórico.")
-        
+        st.info("Seleccione el periodo específico. Puede cargar archivo o pegar datos.")
         col_db, col_anio, col_mes = st.columns([2, 1, 1])
+        with col_db: dataset_name = st.selectbox("Base de Datos:", list(FILES_MASTER.keys()))
+        with col_anio: edit_anio = st.selectbox("Año Edición:", [2025, 2026])
+        with col_mes: edit_mes = st.selectbox("Mes Edición:", list(range(1, 13)), index=10)
         
-        with col_db:
-            dataset_name = st.selectbox("Base de Datos:", list(FILES_MASTER.keys()))
-        with col_anio:
-            edit_anio = st.selectbox("Año Edición:", [2025, 2026])
-        with col_mes:
-            edit_mes = st.selectbox("Mes Edición:", list(range(1, 13)), index=10) # Default Nov
-            
-        # Cargar DF completo de sesión
         df_full = st.session_state.dfs_master[dataset_name]
         
-        # --- FIX: Ensure AÑO and MES exist before filtering ---
-        if 'AÑO' not in df_full.columns:
-            df_full['AÑO'] = 0
-        if 'MES' not in df_full.columns:
-            df_full['MES'] = 0
-            
-        # Ensure correct types for filtering
+        # FIX AÑO MES
+        if 'AÑO' not in df_full.columns: df_full['AÑO'] = 0
+        if 'MES' not in df_full.columns: df_full['MES'] = 0
         df_full['AÑO'] = pd.to_numeric(df_full['AÑO'], errors='coerce').fillna(0).astype(int)
         df_full['MES'] = pd.to_numeric(df_full['MES'], errors='coerce').fillna(0).astype(int)
         
-        # Filtrar solo el periodo seleccionado para editar
-        if not df_full.empty:
-            mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
-            df_periodo = df_full[mask_edit].copy()
-        else:
-            df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
-            
-        # Si está vacío el periodo, inicializar con estructura correcta para permitir pegar
+        mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
+        df_periodo = df_full[mask_edit].copy()
+        
         if df_periodo.empty:
             df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
         
         st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
-        
-        # 1. Opción de Subir Archivo para este mes
-        uploaded_file = st.file_uploader(f"Cargar CSV/Excel para {dataset_name} ({edit_mes}/{edit_anio})", type=['csv', 'xlsx'])
-        
+        uploaded_file = st.file_uploader(f"Cargar CSV/Excel para {dataset_name}", type=['csv', 'xlsx'])
         if uploaded_file:
             try:
-                if uploaded_file.name.endswith('.csv'):
-                    df_upload = pd.read_csv(uploaded_file)
-                else:
-                    df_upload = pd.read_excel(uploaded_file)
-                
-                # Normalizar y filtrar columnas
+                if uploaded_file.name.endswith('.csv'): df_upload = pd.read_csv(uploaded_file)
+                else: df_upload = pd.read_excel(uploaded_file)
                 df_upload.columns = df_upload.columns.str.strip()
                 cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
-                for c in cols_req:
+                for c in cols_req: 
                     if c not in df_upload.columns: df_upload[c] = None
                 df_upload = df_upload[cols_req]
-                
-                # Asignar año/mes seleccionado si no vienen o están vacíos
-                df_upload['AÑO'] = edit_anio
-                df_upload['MES'] = edit_mes
-                
-                # Reemplazar df_periodo para mostrar en el editor
+                df_upload['AÑO'] = edit_anio; df_upload['MES'] = edit_mes
                 df_periodo = df_upload
-                st.success("Archivo cargado en vista previa. Revise abajo y guarde.")
-            except Exception as e:
-                st.error(f"Error: {e}")
+                st.success("Archivo cargado en vista previa.")
+            except Exception as e: st.error(f"Error: {e}")
 
-        st.caption("También puede pegar datos desde Excel (Ctrl+V) en la tabla vacía.")
+        edited_periodo = st.data_editor(df_periodo, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}_{edit_anio}_{edit_mes}")
         
-        # Editor
-        edited_periodo = st.data_editor(
-            df_periodo,
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_{dataset_name}_{edit_anio}_{edit_mes}",
-            column_config={
-                "AÑO": st.column_config.NumberColumn(format="%d", disabled=False),
-                "MES": st.column_config.NumberColumn(format="%d", disabled=False),
-            }
-        )
-        
-        # Botón Guardar (Lógica de Fusión)
         if st.button(f"💾 Guardar Periodo {edit_mes}/{edit_anio}"):
-            # 1. Eliminar datos viejos de este periodo en el DF principal
-            # Se usa una máscara segura
             mask_old = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
             df_clean = df_full[~mask_old]
-            
-            # 2. Asegurar que los datos nuevos tengan el año/mes correcto
-            # Si el usuario pegó datos sin año/mes, se los ponemos
             if not edited_periodo.empty:
-                if 'AÑO' in edited_periodo.columns:
-                    edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
-                else:
-                    edited_periodo['AÑO'] = edit_anio
-                    
-                if 'MES' in edited_periodo.columns:
-                    edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
-                else:
-                    edited_periodo['MES'] = edit_mes
-                    
-                # Fix specific for AÑO/MES being 0 or empty after paste if not mapped correctly
+                if 'AÑO' in edited_periodo.columns: edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
+                else: edited_periodo['AÑO'] = edit_anio
+                if 'MES' in edited_periodo.columns: edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
+                else: edited_periodo['MES'] = edit_mes
                 edited_periodo.loc[edited_periodo['AÑO'] == 0, 'AÑO'] = edit_anio
                 edited_periodo.loc[edited_periodo['MES'] == 0, 'MES'] = edit_mes
             
-            # 3. Concatenar
             df_final = pd.concat([df_clean, edited_periodo], ignore_index=True)
-            
-            # 4. Actualizar sesión y disco
             st.session_state.dfs_master[dataset_name] = df_final
             filename = FILES_MASTER[dataset_name]
             df_final.to_csv(filename, index=False)
-            
-            st.success(f"¡Datos del periodo {edit_mes}/{edit_anio} guardados exitosamente!")
-            time.sleep(1)
-            st.rerun()
+            st.success("Guardado exitoso.")
+            time.sleep(1); st.rerun()
