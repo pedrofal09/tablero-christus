@@ -11,9 +11,9 @@ st.set_page_config(page_title="Tablero Ciclo de Ingresos Integrado", layout="wid
 # --- ARCHIVOS DE CONFIGURACIÓN ---
 ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
-ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv' # NUEVO: Para guardar la definición de indicadores
+ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv'
 
-# Nombres de archivos operativos (MASTER)
+# Nombres de archivos operativos (MASTER) - Ajustado a tus nombres reales
 FILES_MASTER = {
     'ADMISIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - ADMISIONES.csv',
     'AUTORIZACIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - AUTORIZACIONES.csv',
@@ -31,7 +31,7 @@ ESTRUCTURA_COLUMNAS = {
     'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
-    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'],
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'], # Ajustado MES duplicado en tu CSV
     'PROVISION': [
         'AÑO', 'MES', 'Aseguradora', 'Fecha Corte', 
         'Prov. Acostados', 'Prov. Ambulatorios', 'Prov. Egresados', 
@@ -39,7 +39,7 @@ ESTRUCTURA_COLUMNAS = {
     ]
 }
 
-# --- DATOS MAESTROS INICIALES (Solo se usan si no existe el archivo CSV) ---
+# --- DATOS MAESTROS (Indicadores Oficiales) ---
 DATOS_MAESTROS_IND_INICIAL = [
     # FACTURACIÓN
     ['FACTURACIÓN', 'Dir. Facturación', 'Facturación oportuna (≤72h egreso)', 0.95, 'MAX', '>95%'],
@@ -193,7 +193,15 @@ def cargar_datos_master_disco():
                 
                 # Mapeo de columnas si difieren ligeramente
                 if key == 'ADMISIONES':
-                    df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
+                    # Manejo de columnas duplicadas de MES en tu CSV original
+                    # Renombramos la segunda columna de mes si existe
+                    cols_list = list(df.columns)
+                    if cols_list.count('MES') > 1:
+                        # Encontrar el indice del segundo 'MES' y renombrarlo
+                        indices = [i for i, x in enumerate(cols_list) if x == 'MES']
+                        if len(indices) > 1:
+                            cols_list[indices[1]] = 'MES_LETRAS'
+                            df.columns = cols_list
                 
                 # Asegurar que existan todas las columnas requeridas
                 for col in cols_esperadas:
@@ -436,6 +444,7 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
 
         dfs_m = st.session_state.dfs_master
         
+        # KPIs Financieros
         facturado = get_kpi(dfs_m['FACTURACION'], ['Valor Facturado', 'FACTURADO'])
         radicado = get_kpi(dfs_m['RADICACION'], ['Valor Radicado', 'RADICADO'])
         brecha = facturado - radicado
@@ -462,6 +471,8 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
             fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
             return f"""<div class="kpi-card"><div class="kpi-title">{title}</div><div class="kpi-value" style="color:{color}">{fmt}</div></div>"""
         
+        # FILA 1
+        st.subheader("1. Desempeño Financiero")
         k1, k2, k3, k4 = st.columns(4)
         with k1: st.markdown(kpi_card_html("Facturado", facturado), unsafe_allow_html=True)
         with k2: st.markdown(kpi_card_html("Radicado", radicado), unsafe_allow_html=True)
@@ -469,7 +480,8 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
         with k4: st.markdown(kpi_card_html("% Cumplimiento", cump, True, "green" if cump >= 0.9 else "orange"), unsafe_allow_html=True)
         
         st.markdown("---")
-        st.subheader("Gestión de Glosas y Devoluciones")
+        # FILA 2
+        st.subheader("2. Gestión de Glosas Cerradas")
         g1, g2, g3, g4 = st.columns(4)
         with g1: st.markdown(kpi_card_html("Devoluciones", devoluciones), unsafe_allow_html=True)
         with g2: st.markdown(kpi_card_html("Glosa Inicial", glosa_inicial), unsafe_allow_html=True)
@@ -477,6 +489,7 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
         with g4: st.markdown(kpi_card_html("Aceptado (Pérdida)", aceptado, False, "red"), unsafe_allow_html=True)
 
         st.markdown("---")
+        # FILA 3 (NUEVA)
         st.subheader("3. Análisis de Provisión y Pendientes")
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1: st.markdown(kpi_card_html("Prov. Acostados", prov_acostados), unsafe_allow_html=True)
@@ -574,7 +587,6 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
             column_config={
                 "AÑO": st.column_config.NumberColumn(format="%d", disabled=False),
                 "MES": st.column_config.NumberColumn(format="%d", disabled=False),
-                "Fecha Corte": st.column_config.TextColumn("Fecha Corte")
             }
         )
         
