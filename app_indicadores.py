@@ -11,6 +11,7 @@ st.set_page_config(page_title="Tablero Ciclo de Ingresos Integrado", layout="wid
 # --- ARCHIVOS DE CONFIGURACIÓN ---
 ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
+ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv' # NUEVO: Para guardar la definición de indicadores
 
 # Nombres de archivos operativos (MASTER)
 FILES_MASTER = {
@@ -30,7 +31,7 @@ ESTRUCTURA_COLUMNAS = {
     'GLOSAS': ['AÑO', 'MES', 'Aseguradora', 'Valor Devoluciones', 'Valor Glosa Inicial', 'Valor Rechazado', 'Valor Aceptado', '% Gestionado'],
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
-    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades'],
+    'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'],
     'PROVISION': [
         'AÑO', 'MES', 'Aseguradora', 'Fecha Corte', 
         'Prov. Acostados', 'Prov. Ambulatorios', 'Prov. Egresados', 
@@ -38,8 +39,8 @@ ESTRUCTURA_COLUMNAS = {
     ]
 }
 
-# --- DATOS MAESTROS (Indicadores Oficiales) ---
-DATOS_MAESTROS_IND = [
+# --- DATOS MAESTROS INICIALES (Solo se usan si no existe el archivo CSV) ---
+DATOS_MAESTROS_IND_INICIAL = [
     # FACTURACIÓN
     ['FACTURACIÓN', 'Dir. Facturación', 'Facturación oportuna (≤72h egreso)', 0.95, 'MAX', '>95%'],
     ['FACTURACIÓN', 'Dir. Facturación', 'Radicación oportuna (≤22 días)', 0.98, 'MAX', '>98%'],
@@ -120,20 +121,40 @@ def autenticar(usuario, password):
             return user_row.iloc[0]
     return None
 
-# --- Funciones para Indicadores ---
-def inicializar_datos_ind():
-    df = pd.DataFrame(DATOS_MAESTROS_IND, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
+# --- Funciones para Maestros de Indicadores ---
+def cargar_maestro_indicadores():
+    if os.path.exists(ARCHIVO_MAESTRO_INDICADORES):
+        return pd.read_csv(ARCHIVO_MAESTRO_INDICADORES)
+    else:
+        # Crear archivo inicial
+        df = pd.DataFrame(DATOS_MAESTROS_IND_INICIAL, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
+        df.to_csv(ARCHIVO_MAESTRO_INDICADORES, index=False)
+        return df
+
+def guardar_maestro_indicadores(df):
+    df.to_csv(ARCHIVO_MAESTRO_INDICADORES, index=False)
+
+# --- Funciones para Datos de Indicadores ---
+def inicializar_datos_ind(df_maestro):
+    # Usar el maestro actual para inicializar
+    df = df_maestro.copy()
     for mes in MESES:
         df[mes] = None
     return df
 
 def cargar_datos_ind():
+    df_maestro = cargar_maestro_indicadores()
+    
     if os.path.exists(ARCHIVO_DATOS_INDICADORES):
         try:
-            return pd.read_csv(ARCHIVO_DATOS_INDICADORES)
+            df_datos = pd.read_csv(ARCHIVO_DATOS_INDICADORES)
+            # Sincronizar con el maestro actual (si se agregaron/quitaron indicadores)
+            # 1. Mantener datos existentes
+            df_merged = pd.merge(df_maestro, df_datos[['INDICADOR'] + MESES], on='INDICADOR', how='left')
+            return df_merged
         except:
-            return inicializar_datos_ind()
-    return inicializar_datos_ind()
+            return inicializar_datos_ind(df_maestro)
+    return inicializar_datos_ind(df_maestro)
 
 def guardar_datos_ind(df):
     df.to_csv(ARCHIVO_DATOS_INDICADORES, index=False)
@@ -241,6 +262,7 @@ with st.sidebar:
         st.rerun()
     st.markdown("---")
 
+# Cargar datos de indicadores (usando el maestro)
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
 df_ind = st.session_state.df_ind
@@ -250,12 +272,127 @@ menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Ma
 if rol in ['ADMIN', 'LIDER']:
     menu.append("📝 Reportar Indicador")
 if rol == 'ADMIN':
-    menu.append("⚙️ Admin Usuarios")
+    menu.append("⚙️ Administración") # Unificado usuarios e indicadores
 
 opcion = st.sidebar.radio("Navegación:", menu)
 
-# --- VISTA: TABLERO OPERATIVO MASTER (MODIFICADO) ---
-if opcion == "📈 Tablero Operativo (Data Master)":
+# ==========================================
+# MODULO 1: ADMINISTRACIÓN (Usuarios e Indicadores)
+# ==========================================
+if opcion == "⚙️ Administración":
+    st.title("Panel de Administración")
+    
+    tab_users, tab_kpis = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores"])
+    
+    # --- PESTAÑA USUARIOS ---
+    with tab_users:
+        df_users = cargar_usuarios()
+        st.dataframe(df_users, hide_index=True, use_container_width=True)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Crear Usuario")
+            with st.form("new_u"):
+                nu = st.text_input("Usuario"); np = st.text_input("Pass"); nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"])
+                na = st.selectbox("Área", ['TODAS'] + list(df_ind['ÁREA'].unique()))
+                if st.form_submit_button("Crear"):
+                    if nu and np:
+                        new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
+                        df_users = pd.concat([df_users, new_row], ignore_index=True)
+                        guardar_usuarios(df_users); st.success("Creado"); st.rerun()
+        with c2:
+            st.subheader("Eliminar")
+            u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique())
+            if st.button("Eliminar Usuario"):
+                if u_del != 'admin':
+                    df_users = df_users[df_users['USUARIO'] != u_del]
+                    guardar_usuarios(df_users); st.success("Eliminado"); st.rerun()
+
+    # --- PESTAÑA INDICADORES (NUEVO) ---
+    with tab_kpis:
+        st.subheader("Gestión Maestra de Indicadores")
+        st.info("Aquí puede editar las metas, agregar nuevos indicadores o eliminar existentes.")
+        
+        # Cargar maestro actual
+        df_maestro = cargar_maestro_indicadores()
+        
+        # Editor interactivo
+        edited_maestro = st.data_editor(
+            df_maestro,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_maestro_kpi",
+            column_config={
+                "LOGICA": st.column_config.SelectboxColumn("Lógica", options=["MAX", "MIN"], required=True),
+                "META_VALOR": st.column_config.NumberColumn("Meta (Decimal)", format="%.2f")
+            }
+        )
+        
+        if st.button("💾 Guardar Cambios en Indicadores"):
+            guardar_maestro_indicadores(edited_maestro)
+            # Recargar los datos de reporte para reflejar cambios (añadir filas nuevas, quitar viejas)
+            st.session_state.df_ind = cargar_datos_ind() 
+            st.success("Maestro de indicadores actualizado. Los cambios se reflejarán en el reporte.")
+            time.sleep(1)
+            st.rerun()
+
+# ==========================================
+# MODULO 2: REPORTE INDICADORES
+# ==========================================
+elif opcion == "📝 Reportar Indicador":
+    st.header("Reporte Mensual Indicadores")
+    areas_posibles = df_ind['ÁREA'].unique()
+    if area_permiso != 'TODAS': areas_posibles = [a for a in areas_posibles if a == area_permiso]
+    c1, c2 = st.columns(2)
+    area_sel = c1.selectbox("Área:", areas_posibles)
+    mes_sel = c2.selectbox("Mes:", MESES)
+    
+    # Filtrar DF de datos
+    df_f = df_ind[df_ind['ÁREA'] == area_sel]
+    
+    with st.form("reporte"):
+        inputs = {}
+        for idx, row in df_f.iterrows():
+            val = row[mes_sel] if pd.notna(row[mes_sel]) else 0.0
+            st.markdown(f"**{row['INDICADOR']}** (Meta: {row['META_TEXTO']})")
+            inputs[idx] = st.number_input("Resultado %", value=float(val)*100, step=0.1, key=idx)
+            st.markdown("---")
+        if st.form_submit_button("Guardar"):
+            for i, v in inputs.items(): df_ind.at[i, mes_sel] = v / 100
+            st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
+
+# ==========================================
+# MODULO 3: DASHBOARD INDICADORES (OFICIAL)
+# ==========================================
+elif opcion == "📊 Dashboard Indicadores (Oficial)":
+    st.header("Tablero de Mando - Indicadores")
+    df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
+    
+    if df_view.empty:
+        st.warning("No hay indicadores asignados para visualizar.")
+    else:
+        kpi_sel = st.selectbox("Indicador:", df_view['INDICADOR'].unique())
+        row = df_ind[df_ind['INDICADOR'] == kpi_sel].iloc[0]
+        meta = row['META_VALOR']; logica = row['LOGICA']
+        y_data = [row[m] if pd.notna(row[m]) else None for m in MESES]
+        last_val = None
+        for m in reversed(MESES):
+            if pd.notna(row[m]): last_val = row[m]; break
+        c1, c2 = st.columns(2)
+        c1.metric("Meta", row['META_TEXTO'])
+        if last_val is not None:
+            color = "normal" if logica == 'MAX' else "inverse"
+            c2.metric("Último", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=color)
+        else: c2.metric("Último", "Sin Datos")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
+        fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
+        fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# MODULO 4: TABLERO OPERATIVO (MASTER) - CON EDITOR
+# ==========================================
+elif opcion == "📈 Tablero Operativo (Data Master)":
     
     tab_vis, tab_edit = st.tabs(["📊 Visualización KPIs", "📝 Editor de Datos (Operativo)"])
     
@@ -288,7 +425,6 @@ if opcion == "📈 Tablero Operativo (Data Master)":
 
         dfs_m = st.session_state.dfs_master
         
-        # KPIs Financieros
         facturado = get_kpi(dfs_m['FACTURACION'], ['Valor Facturado', 'FACTURADO'])
         radicado = get_kpi(dfs_m['RADICACION'], ['Valor Radicado', 'RADICADO'])
         brecha = facturado - radicado
@@ -315,8 +451,6 @@ if opcion == "📈 Tablero Operativo (Data Master)":
             fmt = f"{val:.1%}" if is_pct else f"${val:,.0f}"
             return f"""<div class="kpi-card"><div class="kpi-title">{title}</div><div class="kpi-value" style="color:{color}">{fmt}</div></div>"""
         
-        # FILA 1
-        st.subheader("1. Desempeño Financiero")
         k1, k2, k3, k4 = st.columns(4)
         with k1: st.markdown(kpi_card_html("Facturado", facturado), unsafe_allow_html=True)
         with k2: st.markdown(kpi_card_html("Radicado", radicado), unsafe_allow_html=True)
@@ -324,8 +458,7 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         with k4: st.markdown(kpi_card_html("% Cumplimiento", cump, True, "green" if cump >= 0.9 else "orange"), unsafe_allow_html=True)
         
         st.markdown("---")
-        # FILA 2
-        st.subheader("2. Gestión de Glosas Cerradas")
+        st.subheader("Gestión de Glosas y Devoluciones")
         g1, g2, g3, g4 = st.columns(4)
         with g1: st.markdown(kpi_card_html("Devoluciones", devoluciones), unsafe_allow_html=True)
         with g2: st.markdown(kpi_card_html("Glosa Inicial", glosa_inicial), unsafe_allow_html=True)
@@ -333,7 +466,6 @@ if opcion == "📈 Tablero Operativo (Data Master)":
         with g4: st.markdown(kpi_card_html("Aceptado (Pérdida)", aceptado, False, "red"), unsafe_allow_html=True)
 
         st.markdown("---")
-        # FILA 3 (NUEVA)
         st.subheader("3. Análisis de Provisión y Pendientes")
         p1, p2, p3, p4, p5 = st.columns(5)
         with p1: st.markdown(kpi_card_html("Prov. Acostados", prov_acostados), unsafe_allow_html=True)
@@ -470,75 +602,3 @@ if opcion == "📈 Tablero Operativo (Data Master)":
             st.success(f"¡Datos del periodo {edit_mes}/{edit_anio} guardados exitosamente!")
             time.sleep(1)
             st.rerun()
-
-# ==========================================
-# MODULO 1: ADMIN USUARIOS (Igual al anterior)
-# ==========================================
-elif opcion == "⚙️ Admin Usuarios":
-    st.title("Gestión de Usuarios")
-    df_users = cargar_usuarios()
-    st.dataframe(df_users, hide_index=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Crear Usuario")
-        with st.form("new_u"):
-            nu = st.text_input("Usuario"); np = st.text_input("Pass"); nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"])
-            na = st.selectbox("Área", ['TODAS'] + list(df_ind['ÁREA'].unique()))
-            if st.form_submit_button("Crear"):
-                if nu and np:
-                    new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
-                    df_users = pd.concat([df_users, new_row], ignore_index=True)
-                    guardar_usuarios(df_users); st.success("Creado"); st.rerun()
-    with c2:
-        st.subheader("Eliminar")
-        u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique())
-        if st.button("Eliminar"):
-            if u_del != 'admin':
-                df_users = df_users[df_users['USUARIO'] != u_del]
-                guardar_usuarios(df_users); st.success("Eliminado"); st.rerun()
-
-# ==========================================
-# MODULO 2: REPORTE INDICADORES
-# ==========================================
-elif opcion == "📝 Reportar Indicador":
-    st.header("Reporte Mensual Indicadores")
-    areas_posibles = df_ind['ÁREA'].unique()
-    if area_permiso != 'TODAS': areas_posibles = [a for a in areas_posibles if a == area_permiso]
-    c1, c2 = st.columns(2)
-    area_sel = c1.selectbox("Área:", areas_posibles)
-    mes_sel = c2.selectbox("Mes:", MESES)
-    df_f = df_ind[df_ind['ÁREA'] == area_sel]
-    with st.form("reporte"):
-        inputs = {}
-        for idx, row in df_f.iterrows():
-            val = row[mes_sel] if pd.notna(row[mes_sel]) else 0.0
-            st.markdown(f"**{row['INDICADOR']}** (Meta: {row['META_TEXTO']})")
-            inputs[idx] = st.number_input("Resultado %", value=float(val)*100, step=0.1, key=idx)
-            st.markdown("---")
-        if st.form_submit_button("Guardar"):
-            for i, v in inputs.items(): df_ind.at[i, mes_sel] = v / 100
-            st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
-
-# ==========================================
-# MODULO 3: DASHBOARD INDICADORES
-# ==========================================
-elif opcion == "📊 Dashboard Indicadores (Oficial)":
-    st.header("Tablero de Mando - Indicadores")
-    df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
-    kpi_sel = st.selectbox("Indicador:", df_view['INDICADOR'].unique())
-    row = df_ind[df_ind['INDICADOR'] == kpi_sel].iloc[0]
-    meta = row['META_VALOR']; logica = row['LOGICA']
-    y_data = [row[m] if pd.notna(row[m]) else None for m in MESES]
-    last_val = None
-    for m in reversed(MESES):
-        if pd.notna(row[m]): last_val = row[m]; break
-    c1, c2 = st.columns(2)
-    c1.metric("Meta", row['META_TEXTO'])
-    if last_val is not None:
-        color = "normal" if logica == 'MAX' else "inverse"
-        c2.metric("Último", f"{last_val:.1%}", f"{last_val-meta:.1%}", delta_color=color)
-    else: c2.metric("Último", "Sin Datos")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=MESES, y=[meta]*len(MESES), mode='lines', name='Meta', line=dict(color='red', dash='dash')))
-    fig.add_trace(go.Scatter(x=MESES, y=y_data, mode='lines+markers+text', name='Real', line=dict(color='#0F1C3F'), text=[f"{v:.1%}" if v else "" for v in y_data], textposition="top center"))
-    fig.update_layout(template="plotly_white", yaxis_tickformat='.0%'); st.plotly_chart(fig, use_container_width=True)
