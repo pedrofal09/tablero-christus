@@ -172,11 +172,11 @@ def cargar_usuarios():
     """
     Carga los usuarios de forma robusta. Si el archivo no existe o está corrupto,
     lo regenera.
+    ADICIONAL: Verifica si existen los usuarios requeridos y si no, los crea/actualiza.
     """
     if not os.path.exists(ARCHIVO_USUARIOS):
         df_users = crear_usuarios_default()
         df_users.to_csv(ARCHIVO_USUARIOS, index=False)
-        # No registramos log aquí porque es inicialización del sistema
         return df_users
     
     try:
@@ -185,6 +185,33 @@ def cargar_usuarios():
             st.error("Archivo de usuarios corrupto detectado. Restaurando defaults de seguridad.")
             df_users = crear_usuarios_default()
             df_users.to_csv(ARCHIVO_USUARIOS, index=False)
+            return df_users
+            
+        # --- LÓGICA DE MIGRACIÓN FORZADA ---
+        cambios = False
+        
+        # 1. Si existe 'admin' (antiguo), lo eliminamos
+        if 'admin' in df_users['USUARIO'].values:
+            df_users = df_users[df_users['USUARIO'] != 'admin']
+            cambios = True
+            
+        # 2. Si NO existe 'Administrador', lo creamos
+        if 'Administrador' not in df_users['USUARIO'].values:
+            nuevo_admin = pd.DataFrame([['Administrador', 'Noviembre 2021', 'ADMIN', 'TODAS']], 
+                                     columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
+            df_users = pd.concat([df_users, nuevo_admin], ignore_index=True)
+            cambios = True
+            
+        # 3. Asegurar que 'ceo' sigue existiendo
+        if 'ceo' not in df_users['USUARIO'].values:
+            nuevo_ceo = pd.DataFrame([['ceo', 'ceo123', 'CEO', 'TODAS']], 
+                                   columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
+            df_users = pd.concat([df_users, nuevo_ceo], ignore_index=True)
+            cambios = True
+
+        if cambios:
+            df_users.to_csv(ARCHIVO_USUARIOS, index=False)
+            
     except Exception as e:
         st.error(f"Error crítico cargando usuarios: {e}. Restaurando acceso.")
         df_users = crear_usuarios_default()
