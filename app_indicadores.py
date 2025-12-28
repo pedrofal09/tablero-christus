@@ -146,7 +146,7 @@ st.markdown("""
 def crear_usuarios_default():
     """Crea un DataFrame de usuarios por defecto."""
     return pd.DataFrame([
-        ['admin', 'admin123', 'ADMIN', 'TODAS'],
+        ['admin', 'Agosto2025$', 'ADMIN', 'TODAS'],
         ['ceo', 'ceo123', 'CEO', 'TODAS']
     ], columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
 
