@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import os
 import time
+from datetime import datetime
 from PIL import Image
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -18,6 +19,7 @@ st.set_page_config(
 ARCHIVO_USUARIOS = 'usuarios.csv'
 ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
 ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv'
+ARCHIVO_LOG = 'auditoria_log.csv'
 
 # Archivos de Imagen Configurables
 LOGO_FILENAME = 'logo_config.png'
@@ -140,30 +142,45 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# FUNCIONES DE GESTIÓN DE USUARIOS Y DATOS
+# FUNCIONES DE GESTIÓN DE USUARIOS, AUDITORÍA Y DATOS
 # ==============================================================================
+
+def registrar_log(usuario, accion, detalle):
+    """Registra eventos importantes en el archivo de auditoría."""
+    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    nuevo_registro = pd.DataFrame([[fecha, usuario, accion, detalle]], columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
+    
+    if not os.path.exists(ARCHIVO_LOG):
+        nuevo_registro.to_csv(ARCHIVO_LOG, index=False)
+    else:
+        nuevo_registro.to_csv(ARCHIVO_LOG, mode='a', header=False, index=False)
+
+def cargar_logs():
+    """Carga el historial de logs."""
+    if os.path.exists(ARCHIVO_LOG):
+        return pd.read_csv(ARCHIVO_LOG)
+    return pd.DataFrame(columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
 
 def crear_usuarios_default():
     """Crea un DataFrame de usuarios por defecto."""
     return pd.DataFrame([
-        ['admin', 'Agosto2025$', 'ADMIN', 'TODAS'],
+        ['Administrador', 'Noviembre 2021', 'ADMIN', 'TODAS'],
         ['ceo', 'ceo123', 'CEO', 'TODAS']
     ], columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
 
 def cargar_usuarios():
     """
-    Carga los usuarios de forma robusta. Si el archivo no existe o está corrupto (vacío),
-    lo regenera para evitar pérdida de acceso.
+    Carga los usuarios de forma robusta. Si el archivo no existe o está corrupto,
+    lo regenera.
     """
     if not os.path.exists(ARCHIVO_USUARIOS):
         df_users = crear_usuarios_default()
         df_users.to_csv(ARCHIVO_USUARIOS, index=False)
+        # No registramos log aquí porque es inicialización del sistema
         return df_users
     
     try:
-        # Intentar cargar
         df_users = pd.read_csv(ARCHIVO_USUARIOS, dtype=str)
-        # Validación de integridad básica
         if df_users.empty or 'USUARIO' not in df_users.columns:
             st.error("Archivo de usuarios corrupto detectado. Restaurando defaults de seguridad.")
             df_users = crear_usuarios_default()
@@ -176,18 +193,15 @@ def cargar_usuarios():
     return df_users
 
 def guardar_usuarios(df_users):
-    """Guarda los usuarios asegurando formato string para evitar pérdida de ceros en claves."""
-    # Convertir a string explícitamente antes de guardar
+    """Guarda los usuarios asegurando formato string."""
     df_users = df_users.astype(str)
     df_users.to_csv(ARCHIVO_USUARIOS, index=False)
 
 def autenticar(usuario, password):
     df_users = cargar_usuarios()
-    # Filtrar
     user_row = df_users[df_users['USUARIO'] == usuario]
     
     if not user_row.empty:
-        # Comparación robusta de strings
         password_registrado = str(user_row.iloc[0]['PASSWORD']).strip()
         password_input = str(password).strip()
         
@@ -200,7 +214,7 @@ def cargar_maestro_indicadores():
         try:
             return pd.read_csv(ARCHIVO_MAESTRO_INDICADORES)
         except:
-            pass # Si falla, recreamos
+            pass 
     
     df = pd.DataFrame(DATOS_MAESTROS_IND_INICIAL, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
     df.to_csv(ARCHIVO_MAESTRO_INDICADORES, index=False)
@@ -220,7 +234,6 @@ def cargar_datos_ind():
     if os.path.exists(ARCHIVO_DATOS_INDICADORES):
         try:
             df_datos = pd.read_csv(ARCHIVO_DATOS_INDICADORES)
-            # Asegurar que existan las columnas de los meses
             cols_datos = ['INDICADOR'] + [m for m in MESES if m in df_datos.columns]
             df_merged = pd.merge(df_maestro, df_datos[cols_datos], on='INDICADOR', how='left')
             return df_merged
@@ -249,12 +262,10 @@ def cargar_datos_master_disco():
                 if key == 'ADMISIONES':
                     df.columns = [c.replace('MES.1', 'MES_LETRAS') if 'MES.' in c else c for c in df.columns]
                 
-                # Asegurar columnas esperadas
                 for col in cols_esperadas:
                     if col not in df.columns: df[col] = None 
                 df = df[cols_esperadas]
                 
-                # Limpieza de valores monetarios
                 for col in df.columns:
                     if df[col].dtype == object:
                         if df[col].astype(str).str.contains(r'\$').any():
@@ -265,7 +276,6 @@ def cargar_datos_master_disco():
                 
                 data[key] = df
             except:
-                # Si falla lectura, DataFrame vacío con estructura correcta
                 data[key] = pd.DataFrame(columns=cols_esperadas)
         else:
             missing.append(filename)
@@ -277,7 +287,6 @@ def guardar_datos_master_disco(dfs):
         filename = FILES_MASTER[key]
         df.to_csv(filename, index=False)
 
-# Función para guardar imagen cargada
 def save_uploaded_image(uploaded_file, filename):
     try:
         with open(filename, "wb") as f:
@@ -286,7 +295,7 @@ def save_uploaded_image(uploaded_file, filename):
     except:
         return False
 
-# Carga inicial de datos master en sesión (solo si no existen)
+# Carga inicial de datos master
 if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
@@ -301,7 +310,6 @@ if 'user_info' not in st.session_state:
 if st.session_state.user_info is None:
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
-        # Mostrar Imagen de Login si existe
         if os.path.exists(LOGIN_IMAGE_FILENAME):
             st.image(LOGIN_IMAGE_FILENAME, use_column_width=True)
         else:
@@ -316,6 +324,8 @@ if st.session_state.user_info is None:
                 usuario_auth = autenticar(user_in, pass_in)
                 if usuario_auth is not None:
                     st.session_state.user_info = usuario_auth
+                    # Podríamos registrar logins, pero para no saturar solo registramos cambios
+                    # registrar_log(user_in, 'Login', 'Ingreso exitoso')
                     st.success("Bienvenido")
                     st.rerun()
                 else:
@@ -326,28 +336,26 @@ if st.session_state.user_info is None:
 user = st.session_state.user_info
 rol = user['ROL']
 area_permiso = user['AREA_ACCESO']
+current_user_name = user['USUARIO']
 
 # --- SIDEBAR ---
 with st.sidebar:
-    # Logo Inteligente (Configurado o Default)
     if os.path.exists(LOGO_FILENAME):
         st.image(LOGO_FILENAME, width=200)
     else:
         st.image(LOGO_DEFAULT_URL, width=180)
     
-    st.subheader(f"👤 {user['USUARIO']}")
+    st.subheader(f"👤 {current_user_name}")
     st.caption(f"Rol: **{rol}**")
     if st.button("Cerrar Sesión"):
         st.session_state.user_info = None
         st.rerun()
     st.markdown("---")
 
-# Cargar indicadores en sesión
 if 'df_ind' not in st.session_state:
     st.session_state.df_ind = cargar_datos_ind()
 df_ind = st.session_state.df_ind
 
-# Recargar master si es necesario
 if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
@@ -372,18 +380,14 @@ with h2:
 # MODULO 1: ADMINISTRACIÓN
 # ==========================================
 if opcion == "⚙️ Administración":
-    tab_users, tab_kpis, tab_config = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores", "🖼️ Configuración Visual"])
+    tab_users, tab_kpis, tab_config, tab_audit = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores", "🖼️ Configuración Visual", "📜 Auditoría de Cambios"])
     
     with tab_users:
-        # Siempre recargar la última versión del archivo para evitar inconsistencias
         df_users = cargar_usuarios()
-        
         st.subheader("Directorio de Usuarios")
         st.dataframe(df_users, hide_index=True, use_container_width=True)
-        
         st.markdown("---")
         
-        # COLUMNAS PARA GESTIÓN
         gc1, gc2, gc3 = st.columns(3)
         
         # 1. CREAR USUARIO
@@ -402,13 +406,14 @@ if opcion == "⚙️ Administración":
                             new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
                             df_users = pd.concat([df_users, new_row], ignore_index=True)
                             guardar_usuarios(df_users)
+                            registrar_log(current_user_name, 'Crear Usuario', f'Creó al usuario: {nu}')
                             st.success("Usuario creado.")
                             time.sleep(1)
                             st.rerun()
                     else:
                         st.warning("Complete usuario y contraseña.")
 
-        # 2. MODIFICAR CONTRASEÑA (NUEVO REQUERIMIENTO)
+        # 2. MODIFICAR CONTRASEÑA
         with gc2:
             st.markdown("##### 🔑 Cambiar Contraseña")
             user_to_mod = st.selectbox("Seleccionar Usuario", df_users['USUARIO'].unique(), key="sel_mod_pass")
@@ -416,9 +421,9 @@ if opcion == "⚙️ Administración":
             
             if st.button("Actualizar Contraseña"):
                 if new_pass_admin:
-                    # Actualizar en el DataFrame
                     df_users.loc[df_users['USUARIO'] == user_to_mod, 'PASSWORD'] = str(new_pass_admin)
                     guardar_usuarios(df_users)
+                    registrar_log(current_user_name, 'Cambio Contraseña', f'Actualizó pass de: {user_to_mod}')
                     st.success(f"Contraseña actualizada para: {user_to_mod}")
                     time.sleep(1)
                     st.rerun()
@@ -430,13 +435,14 @@ if opcion == "⚙️ Administración":
             st.markdown("##### 🗑️ Eliminar")
             u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique(), key="sel_del_user")
             if st.button("Eliminar Definitivamente"):
-                if u_del == 'admin':
-                    st.error("No se puede eliminar al usuario admin principal.")
-                elif u_del == st.session_state.user_info['USUARIO']:
+                if u_del == 'Administrador':
+                    st.error("No se puede eliminar al usuario Administrador principal.")
+                elif u_del == current_user_name:
                     st.error("No puedes eliminar tu propio usuario mientras estás logueado.")
                 else:
                     df_users = df_users[df_users['USUARIO'] != u_del]
                     guardar_usuarios(df_users)
+                    registrar_log(current_user_name, 'Eliminar Usuario', f'Eliminó al usuario: {u_del}')
                     st.success("Usuario eliminado.")
                     time.sleep(1)
                     st.rerun()
@@ -453,6 +459,7 @@ if opcion == "⚙️ Administración":
         if st.button("💾 Guardar Cambios en Indicadores"):
             guardar_maestro_indicadores(edited_maestro)
             st.session_state.df_ind = cargar_datos_ind()
+            registrar_log(current_user_name, 'Configuración Indicadores', 'Actualizó maestro de KPIs')
             st.success("Actualizado.")
             time.sleep(1)
             st.rerun()
@@ -460,7 +467,6 @@ if opcion == "⚙️ Administración":
     with tab_config:
         st.subheader("Personalización de Marca")
         st.info("Sube las imágenes corporativas aquí (Formatos: PNG, JPG).")
-        
         c_logo, c_login = st.columns(2)
         
         with c_logo:
@@ -468,6 +474,7 @@ if opcion == "⚙️ Administración":
             logo_file = st.file_uploader("Subir Logo", type=['png', 'jpg', 'jpeg'], key="up_logo")
             if logo_file:
                 if save_uploaded_image(logo_file, LOGO_FILENAME):
+                    registrar_log(current_user_name, 'Branding', 'Actualizó Logo Principal')
                     st.success("Logo actualizado.")
                     st.image(LOGO_FILENAME, width=150)
                     time.sleep(1); st.rerun()
@@ -475,6 +482,7 @@ if opcion == "⚙️ Administración":
                 st.image(LOGO_FILENAME, width=150)
                 if st.button("Restaurar Logo Default"):
                     os.remove(LOGO_FILENAME)
+                    registrar_log(current_user_name, 'Branding', 'Restauró Logo Default')
                     st.rerun()
 
         with c_login:
@@ -482,6 +490,7 @@ if opcion == "⚙️ Administración":
             login_file = st.file_uploader("Subir Imagen Login", type=['png', 'jpg', 'jpeg'], key="up_login")
             if login_file:
                 if save_uploaded_image(login_file, LOGIN_IMAGE_FILENAME):
+                    registrar_log(current_user_name, 'Branding', 'Actualizó Imagen Login')
                     st.success("Imagen de login actualizada.")
                     st.image(LOGIN_IMAGE_FILENAME, width=200)
                     time.sleep(1); st.rerun()
@@ -489,7 +498,19 @@ if opcion == "⚙️ Administración":
                 st.image(LOGIN_IMAGE_FILENAME, width=200)
                 if st.button("Quitar Imagen Login"):
                     os.remove(LOGIN_IMAGE_FILENAME)
+                    registrar_log(current_user_name, 'Branding', 'Eliminó Imagen Login')
                     st.rerun()
+
+    with tab_audit:
+        st.subheader("Registro de Auditoría y Cambios")
+        st.markdown("Historial de acciones realizadas por los usuarios en el sistema.")
+        df_log = cargar_logs()
+        if not df_log.empty:
+            # Ordenar por fecha descendente (asumiendo formato ordenable, o invertimos)
+            df_log = df_log.iloc[::-1]
+            st.dataframe(df_log, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay registros de auditoría aún.")
 
 # ==========================================
 # MODULO 2: REPORTE INDICADORES
@@ -510,7 +531,10 @@ elif opcion == "📝 Reportar Indicador":
             st.markdown("---")
         if st.form_submit_button("Guardar"):
             for i, v in inputs.items(): df_ind.at[i, mes_sel] = v / 100
-            st.session_state.df_ind = df_ind; guardar_datos_ind(df_ind); st.success("Guardado.")
+            st.session_state.df_ind = df_ind
+            guardar_datos_ind(df_ind)
+            registrar_log(current_user_name, 'Reporte Mensual', f'Cargó datos {area_sel} - {mes_sel}')
+            st.success("Guardado.")
 
 # ==========================================
 # MODULO 3: DASHBOARD INDICADORES (OFICIAL)
@@ -660,5 +684,6 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
             st.session_state.dfs_master[dataset_name] = df_final
             filename = FILES_MASTER[dataset_name]
             df_final.to_csv(filename, index=False)
+            registrar_log(current_user_name, 'Edición Data Master', f'Modificó {dataset_name} {edit_mes}/{edit_anio}')
             st.success("Guardado exitoso.")
             time.sleep(1); st.rerun()
