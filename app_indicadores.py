@@ -169,9 +169,9 @@ def crear_usuario_admin_unico():
 
 def cargar_usuarios():
     """
-    Carga los usuarios.
-    LÓGICA DE REINICIO: Si detecta usuarios antiguos o configuración incorrecta,
-    elimina todo y deja solo al Administrador unico.
+    Carga los usuarios de manera persistente.
+    SOLO crea el usuario por defecto SI EL ARCHIVO NO EXISTE o ESTÁ VACÍO.
+    Ya NO reinicia forzosamente en cada carga para evitar pérdida de datos.
     """
     # Determinar actor para logs
     actor = 'SYSTEM'
@@ -182,9 +182,8 @@ def cargar_usuarios():
         actor = 'SYSTEM'
 
     expected_cols = ['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO']
-    REINICIAR = False
 
-    # 1. Si no existe, crear
+    # 1. Si no existe, crear inicial (Solo la primera vez)
     if not os.path.exists(ARCHIVO_USUARIOS):
         df_users = crear_usuario_admin_unico()
         df_users.to_csv(ARCHIVO_USUARIOS, index=False)
@@ -195,32 +194,12 @@ def cargar_usuarios():
     try:
         df_users = pd.read_csv(ARCHIVO_USUARIOS, dtype=str)
         
-        # Validaciones para forzar reinicio (Hard Reset solicitado)
-        # Si el DataFrame está vacío o columnas mal
+        # Validación de integridad básica (si está vacío o corrupto)
         if df_users.empty or not all(col in df_users.columns for col in expected_cols):
-            REINICIAR = True
-        
-        # Si existe el usuario 'ceo' (de la versión anterior) -> REINICIAR para limpiar
-        if 'ceo' in df_users['USUARIO'].values:
-            REINICIAR = True
-            
-        # Si existe 'Administrador' pero la clave no es Agosto2025 -> REINICIAR (o actualizar)
-        # Para ser estrictos con la solicitud "elimina los usuarios creados y reinicialos",
-        # si detectamos algo que no cuadra con la nueva política, reiniciamos.
-        if 'Administrador' in df_users['USUARIO'].values:
-            mask = df_users['USUARIO'] == 'Administrador'
-            current_pass = df_users.loc[mask, 'PASSWORD'].iloc[0]
-            if str(current_pass) != 'Agosto2025':
-                REINICIAR = True
-        else:
-            # Si no existe Administrador -> REINICIAR
-            REINICIAR = True
-
-        if REINICIAR:
+            st.warning("Archivo de usuarios corrupto detectado. Restaurando acceso maestro.")
             df_users = crear_usuario_admin_unico()
             df_users.to_csv(ARCHIVO_USUARIOS, index=False)
-            registrar_log(actor, 'Reinicio Sistema', 'Se eliminaron usuarios antiguos y se restableció Administrador único.')
-            st.toast("Sistema de usuarios reiniciado a configuración segura.")
+            registrar_log(actor, 'Recuperación', 'Archivo corrupto restaurado.')
             return df_users
             
         return df_users
@@ -400,16 +379,16 @@ if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
 # --- LÓGICA DE MENÚ SEGÚN ROL ---
-# 1. ADMIN: Todo.
-# 2. CEO: Ver todo (Indicadores + Tablero Operativo), no editar ni administrar.
-# 3. LIDER: Ver Indicadores (Filtrado), Reportar Indicador (Filtrado), Tablero Operativo (Sin filtro actual, pero accesible).
+# ADMIN y ADMIN_DELEGADO ven todo
+# CEO ve tableros pero no administra
+# LIDER solo sus cosas
 
 menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Master)"]
 
-if rol in ['ADMIN', 'LIDER']:
+if rol in ['ADMIN', 'ADMIN_DELEGADO', 'LIDER']:
     menu.append("📝 Reportar Indicador")
 
-if rol == 'ADMIN':
+if rol in ['ADMIN', 'ADMIN_DELEGADO']:
     menu.append("⚙️ Administración")
 
 opcion = st.sidebar.radio("Navegación:", menu)
@@ -430,127 +409,148 @@ if opcion == "⚙️ Administración":
     tab_users, tab_kpis, tab_config, tab_audit = st.tabs(["👥 Gestión de Usuarios", "📊 Gestión de Indicadores", "🖼️ Configuración Visual", "📜 Auditoría de Cambios"])
     
     with tab_users:
-        df_users = cargar_usuarios()
         st.subheader("Directorio de Usuarios")
-        st.dataframe(df_users, hide_index=True, use_container_width=True)
-        st.markdown("---")
         
-        gc1, gc2, gc3 = st.columns(3)
+        # VALIDACIÓN CRÍTICA: SOLO 'Administrador' (Usuario Principal) PUEDE GESTIONAR
+        # Aunque ADMIN_DELEGADO pueda ver el módulo, no puede crear/editar usuarios.
+        es_admin_principal = (current_user_name == 'Administrador')
         
-        # 1. CREAR USUARIO
-        with gc1:
-            st.markdown("##### ➕ Crear Nuevo")
-            with st.form("new_u"):
-                nu = st.text_input("Usuario")
-                np = st.text_input("Password", type="password")
-                nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"], help="ADMIN: Todo. CEO: Ver Todo. LIDER: Gestión su área.")
-                
-                # Opciones de área
-                opciones_area = ['TODAS'] + list(df_ind['ÁREA'].unique())
-                na = st.selectbox("Área Asignada", opciones_area, help="Para LIDER, define qué datos ve y carga.")
-                
-                if st.form_submit_button("Crear"):
-                    if nu and np:
-                        if nu in df_users['USUARIO'].values:
-                            st.error("El usuario ya existe.")
-                        else:
-                            new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
-                            df_users = pd.concat([df_users, new_row], ignore_index=True)
-                            guardar_usuarios(df_users)
-                            registrar_log(current_user_name, 'Crear Usuario', f'Creó al usuario: {nu} ({nr})')
-                            st.success("Usuario creado.")
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.warning("Complete usuario y contraseña.")
-
-        # 2. MODIFICAR CONTRASEÑA
-        with gc2:
-            st.markdown("##### 🔑 Cambiar Contraseña")
-            user_to_mod = st.selectbox("Seleccionar Usuario", df_users['USUARIO'].unique(), key="sel_mod_pass")
-            new_pass_admin = st.text_input("Nueva Contraseña", type="password", key="new_pass_admin")
+        if not es_admin_principal:
+            st.error("⚠️ ACCESO RESTRINGIDO: Solo el usuario 'Administrador' principal puede crear, modificar o eliminar usuarios.")
+            st.info("Su rol le permite visualizar la configuración, pero no alterar credenciales.")
+            df_users = cargar_usuarios()
+            st.dataframe(df_users[['USUARIO', 'ROL', 'AREA_ACCESO']], hide_index=True, use_container_width=True) # Ocultar password por seguridad visual
+        else:
+            # Lógica completa para Administrador Principal
+            df_users = cargar_usuarios()
+            st.dataframe(df_users, hide_index=True, use_container_width=True)
+            st.markdown("---")
             
-            if st.button("Actualizar Contraseña"):
-                if new_pass_admin:
-                    df_users.loc[df_users['USUARIO'] == user_to_mod, 'PASSWORD'] = str(new_pass_admin)
-                    guardar_usuarios(df_users)
-                    registrar_log(current_user_name, 'Cambio Contraseña', f'Actualizó pass de: {user_to_mod}')
-                    st.success(f"Contraseña actualizada para: {user_to_mod}")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("Debe ingresar una nueva contraseña.")
+            gc1, gc2, gc3 = st.columns(3)
+            
+            # 1. CREAR USUARIO
+            with gc1:
+                st.markdown("##### ➕ Crear Nuevo")
+                with st.form("new_u"):
+                    nu = st.text_input("Usuario")
+                    np = st.text_input("Password", type="password")
+                    # Nuevo rol agregado
+                    nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN_DELEGADO"], help="ADMIN_DELEGADO: Configura pero no gestiona usuarios.")
+                    
+                    # Opciones de área
+                    opciones_area = ['TODAS'] + list(df_ind['ÁREA'].unique())
+                    na = st.selectbox("Área Asignada", opciones_area, help="Para LIDER, define qué datos ve y carga.")
+                    
+                    if st.form_submit_button("Crear"):
+                        if nu and np:
+                            if nu in df_users['USUARIO'].values:
+                                st.error("El usuario ya existe.")
+                            else:
+                                new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
+                                df_users = pd.concat([df_users, new_row], ignore_index=True)
+                                guardar_usuarios(df_users)
+                                registrar_log(current_user_name, 'Crear Usuario', f'Creó al usuario: {nu} ({nr})')
+                                st.success("Usuario creado.")
+                                time.sleep(1)
+                                st.rerun()
+                        else:
+                            st.warning("Complete usuario y contraseña.")
 
-        # 3. ELIMINAR USUARIO
-        with gc3:
-            st.markdown("##### 🗑️ Eliminar")
-            u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique(), key="sel_del_user")
-            if st.button("Eliminar Definitivamente"):
-                if u_del == 'Administrador':
-                    st.error("No se puede eliminar al usuario Administrador principal.")
-                elif u_del == current_user_name:
-                    st.error("No puedes eliminar tu propio usuario mientras estás logueado.")
-                else:
-                    df_users = df_users[df_users['USUARIO'] != u_del]
-                    guardar_usuarios(df_users)
-                    registrar_log(current_user_name, 'Eliminar Usuario', f'Eliminó al usuario: {u_del}')
-                    st.success("Usuario eliminado.")
-                    time.sleep(1)
-                    st.rerun()
+            # 2. MODIFICAR CONTRASEÑA
+            with gc2:
+                st.markdown("##### 🔑 Cambiar Contraseña")
+                user_to_mod = st.selectbox("Seleccionar Usuario", df_users['USUARIO'].unique(), key="sel_mod_pass")
+                new_pass_admin = st.text_input("Nueva Contraseña", type="password", key="new_pass_admin")
+                
+                if st.button("Actualizar Contraseña"):
+                    if new_pass_admin:
+                        df_users.loc[df_users['USUARIO'] == user_to_mod, 'PASSWORD'] = str(new_pass_admin)
+                        guardar_usuarios(df_users)
+                        registrar_log(current_user_name, 'Cambio Contraseña', f'Actualizó pass de: {user_to_mod}')
+                        st.success(f"Contraseña actualizada para: {user_to_mod}")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("Debe ingresar una nueva contraseña.")
+
+            # 3. ELIMINAR USUARIO
+            with gc3:
+                st.markdown("##### 🗑️ Eliminar")
+                u_del = st.selectbox("Eliminar Usuario", df_users['USUARIO'].unique(), key="sel_del_user")
+                if st.button("Eliminar Definitivamente"):
+                    if u_del == 'Administrador':
+                        st.error("No se puede eliminar al usuario Administrador principal.")
+                    elif u_del == current_user_name:
+                        st.error("No puedes eliminar tu propio usuario mientras estás logueado.")
+                    else:
+                        df_users = df_users[df_users['USUARIO'] != u_del]
+                        guardar_usuarios(df_users)
+                        registrar_log(current_user_name, 'Eliminar Usuario', f'Eliminó al usuario: {u_del}')
+                        st.success("Usuario eliminado.")
+                        time.sleep(1)
+                        st.rerun()
 
     with tab_kpis:
         st.subheader("Gestión Maestra de Indicadores")
         df_maestro = cargar_maestro_indicadores()
-        edited_maestro = st.data_editor(
-            df_maestro, num_rows="dynamic", use_container_width=True, key="editor_maestro_kpi",
-            column_config={"LOGICA": st.column_config.SelectboxColumn("Lógica", options=["MAX", "MIN"], required=True),
-                           "META_VALOR": st.column_config.NumberColumn("Meta (Decimal)", format="%.2f"),
-                           "ÁREA": st.column_config.SelectboxColumn("Área", options=list(df_maestro['ÁREA'].unique()))}
-        )
-        if st.button("💾 Guardar Cambios en Indicadores"):
-            guardar_maestro_indicadores(edited_maestro)
-            st.session_state.df_ind = cargar_datos_ind()
-            registrar_log(current_user_name, 'Configuración Indicadores', 'Actualizó maestro de KPIs')
-            st.success("Actualizado.")
-            time.sleep(1)
-            st.rerun()
+        
+        # Permitir edición a ADMIN y ADMIN_DELEGADO
+        if rol in ['ADMIN', 'ADMIN_DELEGADO']:
+            edited_maestro = st.data_editor(
+                df_maestro, num_rows="dynamic", use_container_width=True, key="editor_maestro_kpi",
+                column_config={"LOGICA": st.column_config.SelectboxColumn("Lógica", options=["MAX", "MIN"], required=True),
+                               "META_VALOR": st.column_config.NumberColumn("Meta (Decimal)", format="%.2f"),
+                               "ÁREA": st.column_config.SelectboxColumn("Área", options=list(df_maestro['ÁREA'].unique()))}
+            )
+            if st.button("💾 Guardar Cambios en Indicadores"):
+                guardar_maestro_indicadores(edited_maestro)
+                st.session_state.df_ind = cargar_datos_ind()
+                registrar_log(current_user_name, 'Configuración Indicadores', 'Actualizó maestro de KPIs')
+                st.success("Actualizado.")
+                time.sleep(1)
+                st.rerun()
+        else:
+            st.dataframe(df_maestro, use_container_width=True)
 
     with tab_config:
         st.subheader("Personalización de Marca")
-        st.info("Sube las imágenes corporativas aquí (Formatos: PNG, JPG).")
-        c_logo, c_login = st.columns(2)
-        
-        with c_logo:
-            st.markdown("### Logo Principal (Barra Lateral)")
-            logo_file = st.file_uploader("Subir Logo", type=['png', 'jpg', 'jpeg'], key="up_logo")
-            if logo_file:
-                if save_uploaded_image(logo_file, LOGO_FILENAME):
-                    registrar_log(current_user_name, 'Branding', 'Actualizó Logo Principal')
-                    st.success("Logo actualizado.")
+        if rol in ['ADMIN', 'ADMIN_DELEGADO']:
+            st.info("Sube las imágenes corporativas aquí (Formatos: PNG, JPG).")
+            c_logo, c_login = st.columns(2)
+            
+            with c_logo:
+                st.markdown("### Logo Principal (Barra Lateral)")
+                logo_file = st.file_uploader("Subir Logo", type=['png', 'jpg', 'jpeg'], key="up_logo")
+                if logo_file:
+                    if save_uploaded_image(logo_file, LOGO_FILENAME):
+                        registrar_log(current_user_name, 'Branding', 'Actualizó Logo Principal')
+                        st.success("Logo actualizado.")
+                        st.image(LOGO_FILENAME, width=150)
+                        time.sleep(1); st.rerun()
+                elif os.path.exists(LOGO_FILENAME):
                     st.image(LOGO_FILENAME, width=150)
-                    time.sleep(1); st.rerun()
-            elif os.path.exists(LOGO_FILENAME):
-                st.image(LOGO_FILENAME, width=150)
-                if st.button("Restaurar Logo Default"):
-                    os.remove(LOGO_FILENAME)
-                    registrar_log(current_user_name, 'Branding', 'Restauró Logo Default')
-                    st.rerun()
+                    if st.button("Restaurar Logo Default"):
+                        os.remove(LOGO_FILENAME)
+                        registrar_log(current_user_name, 'Branding', 'Restauró Logo Default')
+                        st.rerun()
 
-        with c_login:
-            st.markdown("### Imagen Pantalla Login")
-            login_file = st.file_uploader("Subir Imagen Login", type=['png', 'jpg', 'jpeg'], key="up_login")
-            if login_file:
-                if save_uploaded_image(login_file, LOGIN_IMAGE_FILENAME):
-                    registrar_log(current_user_name, 'Branding', 'Actualizó Imagen Login')
-                    st.success("Imagen de login actualizada.")
+            with c_login:
+                st.markdown("### Imagen Pantalla Login")
+                login_file = st.file_uploader("Subir Imagen Login", type=['png', 'jpg', 'jpeg'], key="up_login")
+                if login_file:
+                    if save_uploaded_image(login_file, LOGIN_IMAGE_FILENAME):
+                        registrar_log(current_user_name, 'Branding', 'Actualizó Imagen Login')
+                        st.success("Imagen de login actualizada.")
+                        st.image(LOGIN_IMAGE_FILENAME, width=200)
+                        time.sleep(1); st.rerun()
+                elif os.path.exists(LOGIN_IMAGE_FILENAME):
                     st.image(LOGIN_IMAGE_FILENAME, width=200)
-                    time.sleep(1); st.rerun()
-            elif os.path.exists(LOGIN_IMAGE_FILENAME):
-                st.image(LOGIN_IMAGE_FILENAME, width=200)
-                if st.button("Quitar Imagen Login"):
-                    os.remove(LOGIN_IMAGE_FILENAME)
-                    registrar_log(current_user_name, 'Branding', 'Eliminó Imagen Login')
-                    st.rerun()
+                    if st.button("Quitar Imagen Login"):
+                        os.remove(LOGIN_IMAGE_FILENAME)
+                        registrar_log(current_user_name, 'Branding', 'Eliminó Imagen Login')
+                        st.rerun()
+        else:
+            st.warning("No tiene permisos para modificar la marca.")
 
     with tab_audit:
         st.subheader("Registro de Auditoría y Cambios")
@@ -597,7 +597,7 @@ elif opcion == "📝 Reportar Indicador":
 # ==========================================
 elif opcion == "📊 Dashboard Indicadores (Oficial)":
     # LÓGICA DE VISUALIZACIÓN:
-    # - ADMIN/CEO (TODAS): Ven todo.
+    # - ADMIN/CEO/ADMIN_DELEGADO (TODAS): Ven todo.
     # - LIDER (Área específica): Ve solo su área.
     
     df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
