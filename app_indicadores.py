@@ -212,7 +212,7 @@ def cargar_usuarios():
             df_users = df_users[df_users['USUARIO'] != 'admin']
             cambios = True
 
-        # 2) Asegurar 'Administrador' y REINICIAR CONTRASEÑA
+        # 2) Asegurar 'Administrador'
         pass_admin_default = 'Noviembre 2021'
         
         if 'Administrador' not in df_users['USUARIO'].values:
@@ -221,16 +221,7 @@ def cargar_usuarios():
             df_users = pd.concat([df_users, nuevo_admin], ignore_index=True)
             cambios = True
             registrar_log(actor, 'Reset Password', "Creado usuario 'Administrador'.")
-        else:
-            # LÓGICA DE RESET FORZOSO: Si la contraseña no es la default, la cambiamos.
-            # Esto soluciona el problema de no poder ingresar.
-            mask_admin = df_users['USUARIO'] == 'Administrador'
-            current_pass = df_users.loc[mask_admin, 'PASSWORD'].iloc[0]
-            if str(current_pass) != pass_admin_default:
-                df_users.loc[mask_admin, 'PASSWORD'] = pass_admin_default
-                cambios = True
-                registrar_log(actor, 'Reset Password', "Contraseña Administrador restaurada a default para acceso.")
-
+        
         # 3) Asegurar que exista 'ceo'
         if 'ceo' not in df_users['USUARIO'].values:
             nuevo_ceo = pd.DataFrame([['ceo', 'ceo123', 'CEO', 'TODAS']], 
@@ -373,7 +364,6 @@ if st.session_state.user_info is None:
             st.markdown("<h1 style='text-align: center; color: #663399;'>🏥 Christus Health</h1>", unsafe_allow_html=True)
             
         st.markdown("<h3 style='text-align: center;'>Acceso al Sistema Integrado</h3>", unsafe_allow_html=True)
-        st.info("Credenciales por defecto: Administrador / Noviembre 2021") # Ayuda visual
         st.markdown("---")
         with st.form("login"):
             user_in = st.text_input("Usuario")
