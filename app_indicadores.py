@@ -161,20 +161,19 @@ def cargar_logs():
         return pd.read_csv(ARCHIVO_LOG)
     return pd.DataFrame(columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
 
-def crear_usuarios_default():
-    """Crea un DataFrame de usuarios por defecto."""
+def crear_usuario_admin_unico():
+    """Crea un DataFrame con SOLAMENTE el usuario administrador solicitado."""
     return pd.DataFrame([
-        ['Administrador', 'Noviembre 2021', 'ADMIN', 'TODAS'],
-        ['ceo', 'ceo123', 'CEO', 'TODAS']
+        ['Administrador', 'Agosto2025', 'ADMIN', 'TODAS']
     ], columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
 
 def cargar_usuarios():
     """
-    Carga los usuarios de forma robusta. 
-    LÓGICA MEJORADA: Reinicia contraseñas por defecto si detecta al usuario principal
-    para asegurar acceso en caso de bloqueo.
+    Carga los usuarios.
+    LÓGICA DE REINICIO: Si detecta usuarios antiguos o configuración incorrecta,
+    elimina todo y deja solo al Administrador unico.
     """
-    # Determinar actor para logs (usuario actual o SYSTEM)
+    # Determinar actor para logs
     actor = 'SYSTEM'
     try:
         if 'user_info' in st.session_state and st.session_state.user_info is not None:
@@ -183,60 +182,52 @@ def cargar_usuarios():
         actor = 'SYSTEM'
 
     expected_cols = ['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO']
+    REINICIAR = False
 
-    # Si no existe el archivo, crear defaults y devolverlos
+    # 1. Si no existe, crear
     if not os.path.exists(ARCHIVO_USUARIOS):
-        df_users = crear_usuarios_default()
+        df_users = crear_usuario_admin_unico()
         df_users.to_csv(ARCHIVO_USUARIOS, index=False)
-        registrar_log(actor, 'Migración Usuarios', 'Archivo usuarios no existía. Se crearon usuarios por defecto.')
+        registrar_log(actor, 'Inicialización', 'Creación inicial usuario Administrador único.')
         return df_users
 
-    # Si existe, intentar leerlo de forma segura
+    # 2. Leer archivo existente
     try:
         df_users = pd.read_csv(ARCHIVO_USUARIOS, dtype=str)
+        
+        # Validaciones para forzar reinicio (Hard Reset solicitado)
+        # Si el DataFrame está vacío o columnas mal
         if df_users.empty or not all(col in df_users.columns for col in expected_cols):
-            st.warning("Archivo de usuarios inválido. Restaurando defaults.")
-            df_users = crear_usuarios_default()
+            REINICIAR = True
+        
+        # Si existe el usuario 'ceo' (de la versión anterior) -> REINICIAR para limpiar
+        if 'ceo' in df_users['USUARIO'].values:
+            REINICIAR = True
+            
+        # Si existe 'Administrador' pero la clave no es Agosto2025 -> REINICIAR (o actualizar)
+        # Para ser estrictos con la solicitud "elimina los usuarios creados y reinicialos",
+        # si detectamos algo que no cuadra con la nueva política, reiniciamos.
+        if 'Administrador' in df_users['USUARIO'].values:
+            mask = df_users['USUARIO'] == 'Administrador'
+            current_pass = df_users.loc[mask, 'PASSWORD'].iloc[0]
+            if str(current_pass) != 'Agosto2025':
+                REINICIAR = True
+        else:
+            # Si no existe Administrador -> REINICIAR
+            REINICIAR = True
+
+        if REINICIAR:
+            df_users = crear_usuario_admin_unico()
             df_users.to_csv(ARCHIVO_USUARIOS, index=False)
+            registrar_log(actor, 'Reinicio Sistema', 'Se eliminaron usuarios antiguos y se restableció Administrador único.')
+            st.toast("Sistema de usuarios reiniciado a configuración segura.")
             return df_users
-
-        # Normalizar y limpiar
-        df_users = df_users.astype(str)
-        df_users['USUARIO'] = df_users['USUARIO'].str.strip()
-        df_users['PASSWORD'] = df_users['PASSWORD'].str.strip()
-        
-        cambios = False
-
-        # 1) Eliminar 'admin' antiguo si existe
-        if 'admin' in df_users['USUARIO'].values:
-            df_users = df_users[df_users['USUARIO'] != 'admin']
-            cambios = True
-
-        # 2) Asegurar 'Administrador'
-        pass_admin_default = 'Noviembre 2021'
-        
-        if 'Administrador' not in df_users['USUARIO'].values:
-            nuevo_admin = pd.DataFrame([['Administrador', pass_admin_default, 'ADMIN', 'TODAS']], 
-                                     columns=expected_cols)
-            df_users = pd.concat([df_users, nuevo_admin], ignore_index=True)
-            cambios = True
-            registrar_log(actor, 'Reset Password', "Creado usuario 'Administrador'.")
-        
-        # 3) Asegurar que exista 'ceo'
-        if 'ceo' not in df_users['USUARIO'].values:
-            nuevo_ceo = pd.DataFrame([['ceo', 'ceo123', 'CEO', 'TODAS']], 
-                                   columns=expected_cols)
-            df_users = pd.concat([df_users, nuevo_ceo], ignore_index=True)
-            cambios = True
-
-        if cambios:
-            df_users.to_csv(ARCHIVO_USUARIOS, index=False)
             
         return df_users
 
     except Exception as e:
         st.error(f"Error crítico cargando usuarios: {e}. Restaurando acceso.")
-        df_users = crear_usuarios_default()
+        df_users = crear_usuario_admin_unico()
         df_users.to_csv(ARCHIVO_USUARIOS, index=False)
         return df_users
 
@@ -372,8 +363,6 @@ if st.session_state.user_info is None:
                 usuario_auth = autenticar(user_in, pass_in)
                 if usuario_auth is not None:
                     st.session_state.user_info = usuario_auth
-                    # Podríamos registrar logins, pero para no saturar solo registramos cambios
-                    # registrar_log(user_in, 'Login', 'Ingreso exitoso')
                     st.success("Bienvenido")
                     st.rerun()
                 else:
@@ -395,6 +384,9 @@ with st.sidebar:
     
     st.subheader(f"👤 {current_user_name}")
     st.caption(f"Rol: **{rol}**")
+    if area_permiso != 'TODAS':
+        st.caption(f"Área: **{area_permiso}**")
+        
     if st.button("Cerrar Sesión"):
         st.session_state.user_info = None
         st.rerun()
@@ -407,9 +399,16 @@ df_ind = st.session_state.df_ind
 if 'dfs_master' not in st.session_state:
     st.session_state.dfs_master, st.session_state.faltantes_master = cargar_datos_master_disco()
 
+# --- LÓGICA DE MENÚ SEGÚN ROL ---
+# 1. ADMIN: Todo.
+# 2. CEO: Ver todo (Indicadores + Tablero Operativo), no editar ni administrar.
+# 3. LIDER: Ver Indicadores (Filtrado), Reportar Indicador (Filtrado), Tablero Operativo (Sin filtro actual, pero accesible).
+
 menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Master)"]
+
 if rol in ['ADMIN', 'LIDER']:
     menu.append("📝 Reportar Indicador")
+
 if rol == 'ADMIN':
     menu.append("⚙️ Administración")
 
@@ -444,8 +443,12 @@ if opcion == "⚙️ Administración":
             with st.form("new_u"):
                 nu = st.text_input("Usuario")
                 np = st.text_input("Password", type="password")
-                nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"])
-                na = st.selectbox("Área", ['TODAS'] + list(df_ind['ÁREA'].unique()))
+                nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN"], help="ADMIN: Todo. CEO: Ver Todo. LIDER: Gestión su área.")
+                
+                # Opciones de área
+                opciones_area = ['TODAS'] + list(df_ind['ÁREA'].unique())
+                na = st.selectbox("Área Asignada", opciones_area, help="Para LIDER, define qué datos ve y carga.")
+                
                 if st.form_submit_button("Crear"):
                     if nu and np:
                         if nu in df_users['USUARIO'].values:
@@ -454,7 +457,7 @@ if opcion == "⚙️ Administración":
                             new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
                             df_users = pd.concat([df_users, new_row], ignore_index=True)
                             guardar_usuarios(df_users)
-                            registrar_log(current_user_name, 'Crear Usuario', f'Creó al usuario: {nu}')
+                            registrar_log(current_user_name, 'Crear Usuario', f'Creó al usuario: {nu} ({nr})')
                             st.success("Usuario creado.")
                             time.sleep(1)
                             st.rerun()
@@ -554,7 +557,7 @@ if opcion == "⚙️ Administración":
         st.markdown("Historial de acciones realizadas por los usuarios en el sistema.")
         df_log = cargar_logs()
         if not df_log.empty:
-            # Ordenar por fecha descendente (asumiendo formato ordenable, o invertimos)
+            # Ordenar por fecha descendente
             df_log = df_log.iloc[::-1]
             st.dataframe(df_log, use_container_width=True, hide_index=True)
         else:
@@ -564,12 +567,17 @@ if opcion == "⚙️ Administración":
 # MODULO 2: REPORTE INDICADORES
 # ==========================================
 elif opcion == "📝 Reportar Indicador":
+    # FILTRO DE SEGURIDAD PARA LIDER: SOLO SU ÁREA
     areas_posibles = df_ind['ÁREA'].unique()
-    if area_permiso != 'TODAS': areas_posibles = [a for a in areas_posibles if a == area_permiso]
+    if area_permiso != 'TODAS': 
+        areas_posibles = [a for a in areas_posibles if a == area_permiso]
+    
     c1, c2 = st.columns(2)
     area_sel = c1.selectbox("Área:", areas_posibles)
     mes_sel = c2.selectbox("Mes:", MESES)
+    
     df_f = df_ind[df_ind['ÁREA'] == area_sel]
+    
     with st.form("reporte"):
         inputs = {}
         for idx, row in df_f.iterrows():
@@ -588,8 +596,13 @@ elif opcion == "📝 Reportar Indicador":
 # MODULO 3: DASHBOARD INDICADORES (OFICIAL)
 # ==========================================
 elif opcion == "📊 Dashboard Indicadores (Oficial)":
+    # LÓGICA DE VISUALIZACIÓN:
+    # - ADMIN/CEO (TODAS): Ven todo.
+    # - LIDER (Área específica): Ve solo su área.
+    
     df_view = df_ind if area_permiso == 'TODAS' else df_ind[df_ind['ÁREA'] == area_permiso]
-    if df_view.empty: st.warning("No hay indicadores disponibles.")
+    
+    if df_view.empty: st.warning("No hay indicadores disponibles para su área asignada.")
     else:
         kpi_sel = st.selectbox("Indicador:", df_view['INDICADOR'].unique())
         row = df_ind[df_ind['INDICADOR'] == kpi_sel].iloc[0]
@@ -613,6 +626,12 @@ elif opcion == "📊 Dashboard Indicadores (Oficial)":
 # MODULO 4: TABLERO OPERATIVO (MASTER)
 # ==========================================
 elif opcion == "📈 Tablero Operativo (Data Master)":
+    # NOTA: Los archivos operativos suelen contener data de TODAS las áreas mezcladas.
+    # Si se requiere filtrar estrictamente para LIDER, se necesitaría una columna "AREA" en cada CSV.
+    # Como la estructura actual de columnas no garantiza "AREA" en todos los archivos,
+    # este módulo muestra la data global. 
+    # (ADMIN y CEO ven todo. LIDER ve todo lo que esté en estos archivos).
+    
     tab_vis, tab_edit = st.tabs(["📊 Visualización KPIs", "📝 Editor de Datos (Operativo)"])
     
     with tab_vis:
@@ -679,59 +698,64 @@ elif opcion == "📈 Tablero Operativo (Data Master)":
 
     with tab_edit:
         st.header("📝 Gestión de Datos Operativos (Por Periodo)")
-        st.info("Seleccione el periodo específico. Puede cargar archivo o pegar datos.")
-        col_db, col_anio, col_mes = st.columns([2, 1, 1])
-        with col_db: dataset_name = st.selectbox("Base de Datos:", list(FILES_MASTER.keys()))
-        with col_anio: edit_anio = st.selectbox("Año Edición:", [2025, 2026])
-        with col_mes: edit_mes = st.selectbox("Mes Edición:", list(range(1, 13)), index=10)
         
-        df_full = st.session_state.dfs_master[dataset_name]
-        
-        # FIX AÑO MES
-        if 'AÑO' not in df_full.columns: df_full['AÑO'] = 0
-        if 'MES' not in df_full.columns: df_full['MES'] = 0
-        df_full['AÑO'] = pd.to_numeric(df_full['AÑO'], errors='coerce').fillna(0).astype(int)
-        df_full['MES'] = pd.to_numeric(df_full['MES'], errors='coerce').fillna(0).astype(int)
-        
-        mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
-        df_periodo = df_full[mask_edit].copy()
-        
-        if df_periodo.empty:
-            df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
-        
-        st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
-        uploaded_file = st.file_uploader(f"Cargar CSV/Excel para {dataset_name}", type=['csv', 'xlsx'])
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith('.csv'): df_upload = pd.read_csv(uploaded_file)
-                else: df_upload = pd.read_excel(uploaded_file)
-                df_upload.columns = df_upload.columns.str.strip()
-                cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
-                for c in cols_req: 
-                    if c not in df_upload.columns: df_upload[c] = None
-                df_upload = df_upload[cols_req]
-                df_upload['AÑO'] = edit_anio; df_upload['MES'] = edit_mes
-                df_periodo = df_upload
-                st.success("Archivo cargado en vista previa.")
-            except Exception as e: st.error(f"Error: {e}")
-
-        edited_periodo = st.data_editor(df_periodo, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}_{edit_anio}_{edit_mes}")
-        
-        if st.button(f"💾 Guardar Periodo {edit_mes}/{edit_anio}"):
-            mask_old = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
-            df_clean = df_full[~mask_old]
-            if not edited_periodo.empty:
-                if 'AÑO' in edited_periodo.columns: edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
-                else: edited_periodo['AÑO'] = edit_anio
-                if 'MES' in edited_periodo.columns: edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
-                else: edited_periodo['MES'] = edit_mes
-                edited_periodo.loc[edited_periodo['AÑO'] == 0, 'AÑO'] = edit_anio
-                edited_periodo.loc[edited_periodo['MES'] == 0, 'MES'] = edit_mes
+        # SOLO ADMIN Y LIDER PUEDEN EDITAR (CEO ES VIEW-ONLY)
+        if rol == 'CEO':
+            st.warning("Su rol (CEO) solo permite visualización. No puede editar datos.")
+        else:
+            st.info("Seleccione el periodo específico. Puede cargar archivo o pegar datos.")
+            col_db, col_anio, col_mes = st.columns([2, 1, 1])
+            with col_db: dataset_name = st.selectbox("Base de Datos:", list(FILES_MASTER.keys()))
+            with col_anio: edit_anio = st.selectbox("Año Edición:", [2025, 2026])
+            with col_mes: edit_mes = st.selectbox("Mes Edición:", list(range(1, 13)), index=10)
             
-            df_final = pd.concat([df_clean, edited_periodo], ignore_index=True)
-            st.session_state.dfs_master[dataset_name] = df_final
-            filename = FILES_MASTER[dataset_name]
-            df_final.to_csv(filename, index=False)
-            registrar_log(current_user_name, 'Edición Data Master', f'Modificó {dataset_name} {edit_mes}/{edit_anio}')
-            st.success("Guardado exitoso.")
-            time.sleep(1); st.rerun()
+            df_full = st.session_state.dfs_master[dataset_name]
+            
+            # FIX AÑO MES
+            if 'AÑO' not in df_full.columns: df_full['AÑO'] = 0
+            if 'MES' not in df_full.columns: df_full['MES'] = 0
+            df_full['AÑO'] = pd.to_numeric(df_full['AÑO'], errors='coerce').fillna(0).astype(int)
+            df_full['MES'] = pd.to_numeric(df_full['MES'], errors='coerce').fillna(0).astype(int)
+            
+            mask_edit = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
+            df_periodo = df_full[mask_edit].copy()
+            
+            if df_periodo.empty:
+                df_periodo = pd.DataFrame(columns=ESTRUCTURA_COLUMNAS[dataset_name])
+            
+            st.markdown(f"### Editando: {dataset_name} - {edit_mes}/{edit_anio}")
+            uploaded_file = st.file_uploader(f"Cargar CSV/Excel para {dataset_name}", type=['csv', 'xlsx'])
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.endswith('.csv'): df_upload = pd.read_csv(uploaded_file)
+                    else: df_upload = pd.read_excel(uploaded_file)
+                    df_upload.columns = df_upload.columns.str.strip()
+                    cols_req = ESTRUCTURA_COLUMNAS[dataset_name]
+                    for c in cols_req: 
+                        if c not in df_upload.columns: df_upload[c] = None
+                    df_upload = df_upload[cols_req]
+                    df_upload['AÑO'] = edit_anio; df_upload['MES'] = edit_mes
+                    df_periodo = df_upload
+                    st.success("Archivo cargado en vista previa.")
+                except Exception as e: st.error(f"Error: {e}")
+
+            edited_periodo = st.data_editor(df_periodo, num_rows="dynamic", use_container_width=True, key=f"editor_{dataset_name}_{edit_anio}_{edit_mes}")
+            
+            if st.button(f"💾 Guardar Periodo {edit_mes}/{edit_anio}"):
+                mask_old = (df_full['AÑO'] == edit_anio) & (df_full['MES'] == edit_mes)
+                df_clean = df_full[~mask_old]
+                if not edited_periodo.empty:
+                    if 'AÑO' in edited_periodo.columns: edited_periodo['AÑO'] = edited_periodo['AÑO'].fillna(edit_anio).astype(int)
+                    else: edited_periodo['AÑO'] = edit_anio
+                    if 'MES' in edited_periodo.columns: edited_periodo['MES'] = edited_periodo['MES'].fillna(edit_mes).astype(int)
+                    else: edited_periodo['MES'] = edit_mes
+                    edited_periodo.loc[edited_periodo['AÑO'] == 0, 'AÑO'] = edit_anio
+                    edited_periodo.loc[edited_periodo['MES'] == 0, 'MES'] = edit_mes
+                
+                df_final = pd.concat([df_clean, edited_periodo], ignore_index=True)
+                st.session_state.dfs_master[dataset_name] = df_final
+                filename = FILES_MASTER[dataset_name]
+                df_final.to_csv(filename, index=False)
+                registrar_log(current_user_name, 'Edición Data Master', f'Modificó {dataset_name} {edit_mes}/{edit_anio}')
+                st.success("Guardado exitoso.")
+                time.sleep(1); st.rerun()
