@@ -2,19 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import os
 import time
-import json
 from datetime import datetime
-from PIL import Image
-
-# Intento de importar librerías de Firebase para persistencia real
-try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore
-    FIREBASE_AVAILABLE = True
-except ImportError:
-    FIREBASE_AVAILABLE = False
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -24,36 +13,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- ARCHIVOS Y CONFIGURACIÓN ---
-# Nombres de documentos en Firestore / Archivos locales de respaldo
-DOC_USUARIOS = 'usuarios'
-DOC_LOGS = 'logs'
-DOC_INDICADORES = 'indicadores'
-FIRESTORE_COLLECTION = "app_persistence" # Colección única para la app
-
-# Nombres de archivos locales (Fallback)
-ARCHIVO_USUARIOS = 'usuarios.csv'
-ARCHIVO_DATOS_INDICADORES = 'datos_indicadores_historico.csv'
-ARCHIVO_MAESTRO_INDICADORES = 'maestro_indicadores.csv'
-ARCHIVO_LOG = 'auditoria_log.csv'
-
-# Imágenes
-LOGO_FILENAME = 'logo_config.png'
-LOGIN_IMAGE_FILENAME = 'login_image.png'
+# --- CONSTANTES Y CONFIGURACIÓN ---
+COLOR_PRIMARY = "#663399"
+COLOR_SECONDARY = "#2c3e50"
 LOGO_DEFAULT_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
 
-# Archivos Maestros
-FILES_MASTER = {
-    'ADMISIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - ADMISIONES.csv',
-    'AUTORIZACIONES': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - AUTORIZACIONES.csv',
-    'FACTURACION': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - FACTURACION.csv',
-    'RADICACION': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - RADICACION.csv',
-    'GLOSAS': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - GLOSAS Y DEVOLUCIONES.csv',
-    'CARTERA': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - CARTERA.csv',
-    'PROVISION': 'Tablero_Ciclo_Ingresos_MASTER.xlsx - PROVISION.csv'
-}
+MESES = ['NOV-25', 'DIC-25', 'ENE-26', 'FEB-26', 'MAR-26', 'ABR-26', 'MAY-26', 
+         'JUN-26', 'JUL-26', 'AGO-26', 'SEP-26', 'OCT-26', 'NOV-26', 'DIC-26']
 
-# Estructura Columnas
+# Definición de estructuras de datos (Archivos Maestros Virtuales)
 ESTRUCTURA_COLUMNAS = {
     'FACTURACION': ['AÑO', 'MES', 'Ranking', 'Aseguradora / Cliente', 'Valor Facturado', '% Participación'],
     'RADICACION': ['AÑO', 'MES', 'Aseguradora', 'No. Facturas', 'Valor Radicado', 'Fecha Corte'],
@@ -61,426 +29,375 @@ ESTRUCTURA_COLUMNAS = {
     'CARTERA': ['AÑO', 'MES', 'Aseguradora', 'Saldo Inicial', 'Meta Recaudo', 'Recaudo Real', '% Cumplimiento'],
     'AUTORIZACIONES': ['AÑO', 'MES', 'Tipo Solicitud', 'Gestionadas', 'Aprobadas', 'Pendientes', 'Negadas', '% Efectividad'],
     'ADMISIONES': ['AÑO', 'MES', 'Sede / Concepto', 'MES_LETRAS', 'Cantidad Actividades', 'Valor Estimado Ingreso', 'Promedio por Paciente'],
-    'PROVISION': [
-        'AÑO', 'MES', 'Aseguradora', 'Fecha Corte', 
-        'Prov. Acostados', 'Prov. Ambulatorios', 'Prov. Egresados', 
-        'Facturado Sin Radicar', 'Cant. Glosas Pendientes', 'Valor Glosas Pendientes'
-    ]
+    'PROVISION': ['AÑO', 'MES', 'Aseguradora', 'Fecha Corte', 'Prov. Acostados', 'Prov. Ambulatorios', 'Prov. Egresados', 'Facturado Sin Radicar', 'Cant. Glosas Pendientes', 'Valor Glosas Pendientes']
 }
 
-# Datos Maestros Iniciales (Hardcoded fallback)
+# Datos Maestros de Indicadores (Hardcoded inicial)
 DATOS_MAESTROS_IND_INICIAL = [
     ['FACTURACIÓN', 'Dir. Facturación', 'Facturación oportuna (≤72h egreso)', 0.95, 'MAX', '>95%'],
     ['FACTURACIÓN', 'Dir. Facturación', 'Radicación oportuna (≤22 días)', 0.98, 'MAX', '>98%'],
-    ['FACTURACIÓN', 'Dir. Facturación', 'Cierre de cargos abiertos (≤30 días)', 0.90, 'MAX', '>90%'],
-    ['FACTURACIÓN', 'Dir. Facturación', 'Depuración de vigencias anteriores', 0.02, 'MIN', '<2%'],
     ['CUENTAS MÉDICAS', 'Jefatura Cuentas Médicas', '% de glosas aceptadas en el mes', 0.02, 'MIN', '<2%'],
-    ['CUENTAS MÉDICAS', 'Jefatura Cuentas Médicas', '% de glosas respondidas en ≤7 días hábiles', 0.50, 'MAX', '>50%'],
-    ['CUENTAS MÉDICAS', 'Jefatura Cuentas Médicas', '% de devoluciones de facturas respondidas oportunamente', 0.30, 'MAX', '>30%'],
-    ['CUENTAS MÉDICAS', 'Jefatura Cuentas Médicas', '% de cumplimiento del cronograma de conciliaciones con entidades', 1.00, 'MAX', '100%'],
-    ['CUENTAS MÉDICAS', 'Jefatura Cuentas Médicas', '% efectividad en conciliación', 0.75, 'MAX', '>75%'],
     ['ADMISIONES', 'Coordinación Admisiones', '% de facturas anuladas por falta de autorización', 0.01, 'MIN', '≤ 1%'],
-    ['ADMISIONES', 'Coordinación Admisiones', '% de facturas anuladas por error en datos de identificación', 0.005, 'MIN', '≤ 0.5%'],
-    ['ADMISIONES', 'Coordinación Admisiones', '% de facturas anuladas por error en escogencia del tipo de usuario', 0.005, 'MIN', '≤ 0.5%'],
-    ['ADMISIONES', 'Coordinación Admisiones', '% de facturas anuladas por error en selección de asegurador', 0.005, 'MIN', '≤ 0.5%'],
-    ['ADMISIONES', 'Coordinación Admisiones', '% de quejas por actitud de servicio en admisión', 0.02, 'MIN', '≤ 2%'],
-    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de autorizaciones de urgencias y hospitalización generadas en ≤7 horas', 1.00, 'MAX', '100%'],
-    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de autorizaciones de urgencias y hospitalización generadas en ≤9 horas', 0.60, 'MIN', '< 60%'],
-    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de solicitudes de tecnologias no convenidas gestionadas integralmente', 0.70, 'MAX', '≥ 70%'],
-    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de solicitudes de tecnologías no cubiertas de planes voluntarios gestionadas', 1.00, 'MAX', '100%'],
-    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de glosa por falta de autorización o error aceptada ', 1.00, 'MAX', '100%'], 
-    ['CARTERA', 'Jefatura de Cartera', '% De cumplimiento de la meta de días de rotación de cartera (DSO)', 1.00, 'MAX', '100%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de cartera vencida >60 días', 0.60, 'MIN', '< 60%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de recaudo sobre facturación del periodo', 0.70, 'MAX', '≥ 70%'],
-    ['CARTERA', 'Jefe Cartera', 'Recuperación de Glosa', 0.85, 'MAX', '> 85%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de conciliaciones realizadas en el mes', 1.00, 'MAX', '100%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de reuniones efectivas con actores clave de clientes pagadores', 1.00, 'MAX', '100%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de cumplimiento del comité de cartera mensual', 1.00, 'MAX', '100%'],
-    ['CARTERA', 'Jefatura de Cartera', '% de cartera >360 días', 0.36, 'MIN', '< 36%']
+    ['AUTORIZACIONES', 'Coord. Autorizaciones', '% de autorizaciones generadas en ≤7 horas', 1.00, 'MAX', '100%'],
+    ['CARTERA', 'Jefatura de Cartera', 'Recuperación de Glosa', 0.85, 'MAX', '> 85%'],
+    ['CARTERA', 'Jefatura de Cartera', '% de cartera vencida >60 días', 0.60, 'MIN', '< 60%']
 ]
 
-MESES = ['NOV-25', 'DIC-25', 'ENE-26', 'FEB-26', 'MAR-26', 'ABR-26', 'MAY-26', 
-         'JUN-26', 'JUL-26', 'AGO-26', 'SEP-26', 'OCT-26', 'NOV-26', 'DIC-26']
-
-# CSS
-st.markdown("""
+# --- ESTILOS CSS PERSONALIZADOS ---
+st.markdown(f"""
     <style>
-    .kpi-card { background-color: #ffffff; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border-left: 5px solid #663399; }
-    .kpi-value { font-size: 28px; color: #2c3e50; font-weight: 900; }
+    .main {{ background-color: #f4f6f9; }}
+    .stApp {{ background-color: #f4f6f9; }}
+    div.block-container {{ padding-top: 2rem; }}
+    .kpi-card {{ 
+        background-color: #ffffff; 
+        border-radius: 10px; 
+        padding: 20px; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
+        text-align: center; 
+        border-left: 5px solid {COLOR_PRIMARY};
+        margin-bottom: 1rem;
+    }}
+    .kpi-title {{ font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }}
+    .kpi-value {{ font-size: 28px; color: {COLOR_SECONDARY}; font-weight: 900; margin: 0; }}
+    .kpi-meta {{ font-size: 12px; color: #27ae60; font-weight: bold; margin-top: 5px; }}
+    h1, h2, h3 {{ color: {COLOR_PRIMARY}; }}
+    .stButton>button {{ background-color: {COLOR_PRIMARY}; color: white; border-radius: 5px; }}
+    .stButton>button:hover {{ background-color: #552b80; border-color: #552b80; }}
     </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# GESTIÓN DE BASE DE DATOS (FIREBASE)
+# GESTIÓN DE DATOS (MOCK / SESSION STATE)
 # ==============================================================================
+# Nota: En un entorno real con persistencia, aquí iría la conexión a Firebase.
+# Para este demo, usaremos st.session_state para simular la base de datos.
 
-@st.cache_resource
-def init_firebase():
-    """Inicializa Firebase con st.secrets"""
-    if not FIREBASE_AVAILABLE:
-        return None
-    try:
-        if not firebase_admin._apps:
-            if "firebase" in st.secrets:
-                # Convertir st.secrets a dict normal para evitar problemas de tipos
-                cred_dict = dict(st.secrets["firebase"])
-                cred = credentials.Certificate(cred_dict)
-                firebase_admin.initialize_app(cred)
-            else:
-                return None
-        return firestore.client()
-    except Exception as e:
-        print(f"Error Firebase: {e}")
-        return None
-
-db = init_firebase()
-
-# ==============================================================================
-# FUNCIONES DE PERSISTENCIA (Dual: DB o CSV)
-# ==============================================================================
-
-def get_data(doc_name, fallback_csv, default_func=None):
-    """Lectura híbrida: Intenta Firestore, luego CSV, luego Default."""
-    # 1. Firestore
-    if db:
-        try:
-            doc = db.collection(FIRESTORE_COLLECTION).document(doc_name).get()
-            if doc.exists:
-                data = doc.to_dict().get('data')
-                if data: return pd.read_json(data, orient='split')
-        except Exception as e:
-            print(f"Error lectura DB {doc_name}: {e}")
-
-    # 2. CSV
-    if os.path.exists(fallback_csv):
-        try:
-            return pd.read_csv(fallback_csv, dtype=str)
-        except: pass
-
-    # 3. Default
-    if default_func: return default_func()
-    return pd.DataFrame()
-
-def save_data(df, doc_name, fallback_csv):
-    """Escritura híbrida: Guarda en Firestore y actualiza CSV local."""
-    # Local
-    try: df.to_csv(fallback_csv, index=False)
-    except: pass
+def init_session_state():
+    """Inicializa datos ficticios si no existen en sesión."""
     
-    # Nube
-    if db:
-        try:
-            json_str = df.to_json(orient='split')
-            db.collection(FIRESTORE_COLLECTION).document(doc_name).set({'data': json_str})
-            return True
-        except Exception as e:
-            st.toast(f"Error guardando en nube: {e}")
-            return False
-    return False
+    # 1. Usuarios
+    if 'db_usuarios' not in st.session_state:
+        st.session_state.db_usuarios = pd.DataFrame([
+            ['Administrador', 'Agosto2025', 'ADMIN', 'TODAS'],
+            ['Gerente', '1234', 'CEO', 'TODAS'],
+            ['LiderFacturacion', '1234', 'LIDER', 'FACTURACIÓN']
+        ], columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
 
-# ==============================================================================
-# LÓGICA DE USUARIOS
-# ==============================================================================
+    # 2. Logs
+    if 'db_logs' not in st.session_state:
+        st.session_state.db_logs = pd.DataFrame(columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
 
-def crear_admin_default():
-    return pd.DataFrame([['Administrador', 'Agosto2025', 'ADMIN', 'TODAS']], 
-                        columns=['USUARIO', 'PASSWORD', 'ROL', 'AREA_ACCESO'])
+    # 3. Indicadores (Con datos aleatorios simulados para demo)
+    if 'db_indicadores' not in st.session_state:
+        import random
+        df = pd.DataFrame(DATOS_MAESTROS_IND_INICIAL, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
+        # Poblar con datos simulados
+        for m in MESES:
+            # Generar valor aleatorio cercano a la meta para simular realidad
+            df[m] = df.apply(lambda x: max(0, min(1, x['META_VALOR'] + random.uniform(-0.1, 0.05))), axis=1)
+        st.session_state.db_indicadores = df
 
-def cargar_usuarios():
-    # Cargar usuarios existentes
-    df = get_data(DOC_USUARIOS, ARCHIVO_USUARIOS, crear_admin_default)
-    
-    # Validación de seguridad: Asegurar que el Admin principal exista siempre
-    # (Pero NO sobrescribir su contraseña si ya existe y es válida para el sistema)
-    if 'Administrador' not in df['USUARIO'].values:
-        new_admin = crear_admin_default()
-        df = pd.concat([df, new_admin], ignore_index=True)
-        save_data(df, DOC_USUARIOS, ARCHIVO_USUARIOS)
-        
-    return df
+    # 4. Datos Maestros Operativos (Tablas vacías o simuladas)
+    if 'dfs_master' not in st.session_state:
+        data = {}
+        for key, cols in ESTRUCTURA_COLUMNAS.items():
+            df = pd.DataFrame(columns=cols)
+            # Fila de ejemplo vacía para que el editor se vea bien
+            # df.loc[0] = [None] * len(cols) 
+            data[key] = df
+        st.session_state.dfs_master = data
 
-def guardar_usuarios_db(df):
-    save_data(df, DOC_USUARIOS, ARCHIVO_USUARIOS)
+init_session_state()
 
+# --- FUNCIONES DE ACCESO A DATOS ---
 def autenticar(user, pwd):
-    df = cargar_usuarios()
+    df = st.session_state.db_usuarios
     row = df[df['USUARIO'] == user]
     if not row.empty:
         if str(row.iloc[0]['PASSWORD']).strip() == str(pwd).strip():
             return row.iloc[0]
     return None
 
-# ==============================================================================
-# FUNCIONES DE LOGS E INDICADORES
-# ==============================================================================
-
 def registrar_log(usuario, accion, detalle):
-    def def_log(): return pd.DataFrame(columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
-    df = get_data(DOC_LOGS, ARCHIVO_LOG, def_log)
-    
     nuevo = pd.DataFrame([[datetime.now().strftime("%Y-%m-%d %H:%M:%S"), usuario, accion, detalle]], 
                          columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
-    df = pd.concat([df, nuevo], ignore_index=True)
-    save_data(df, DOC_LOGS, ARCHIVO_LOG)
+    st.session_state.db_logs = pd.concat([st.session_state.db_logs, nuevo], ignore_index=True)
 
-def cargar_logs_view():
-    def def_log(): return pd.DataFrame(columns=['FECHA', 'USUARIO', 'ACCION', 'DETALLE'])
-    return get_data(DOC_LOGS, ARCHIVO_LOG, def_log)
+def obtener_indicadores():
+    return st.session_state.db_indicadores
 
-def cargar_datos_ind():
-    def def_ind():
-        df = pd.DataFrame(DATOS_MAESTROS_IND_INICIAL, columns=['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO'])
-        for m in MESES: df[m] = None
-        return df
-    
-    df = get_data(DOC_INDICADORES, ARCHIVO_DATOS_INDICADORES)
-    if df.empty: df = def_ind()
-    
-    # Asegurar columnas de meses
-    for m in MESES:
-        if m not in df.columns: df[m] = None
-    return df
-
-def guardar_datos_ind(df):
-    save_data(df, DOC_INDICADORES, ARCHIVO_DATOS_INDICADORES)
-
-def cargar_maestro():
-    # El maestro es un subconjunto de los datos
-    return cargar_datos_ind()[['ÁREA', 'RESPONSABLE', 'INDICADOR', 'META_VALOR', 'LOGICA', 'META_TEXTO']]
-
-def guardar_maestro_indicadores(df_maestro_nuevo):
-    # Al guardar el maestro, debemos preservar los datos de los meses
-    # Lógica simplificada: Actualizamos sobre los datos existentes
-    df_actual = cargar_datos_ind()
-    # Aquí deberíamos hacer un merge inteligente, pero para este caso
-    # asumiremos que la estructura se mantiene o se guarda completa
-    pass 
-
-# --- MASTERS OPERATIVOS ---
-def cargar_master_ops():
-    data = {}
-    for key, fname in FILES_MASTER.items():
-        df = get_data(key, fname) # Usamos la key como nombre de doc en Firebase
-        
-        cols = ESTRUCTURA_COLUMNAS.get(key, ['AÑO', 'MES'])
-        if df.empty:
-            df = pd.DataFrame(columns=cols)
-        else:
-            # Limpieza rápida
-            df.columns = df.columns.str.strip()
-            for c in cols: 
-                if c not in df.columns: df[c] = None
-            df = df[cols]
-            # Convertir numericos si es necesario (simplificado)
-            if 'AÑO' in df.columns: df['AÑO'] = pd.to_numeric(df['AÑO'], errors='coerce').fillna(0).astype(int)
-            if 'MES' in df.columns: df['MES'] = pd.to_numeric(df['MES'], errors='coerce').fillna(0).astype(int)
-            
-        data[key] = df
-    return data
-
-def guardar_master_ops(dfs):
-    for key, df in dfs.items():
-        fname = FILES_MASTER[key]
-        save_data(df, key, fname)
-
-def save_img_local(uploaded, fname):
-    try:
-        with open(fname, "wb") as f: f.write(uploaded.getbuffer())
-        return True
-    except: return False
-
-if 'dfs_master' not in st.session_state:
-    st.session_state.dfs_master = cargar_master_ops()
+def guardar_indicadores(df):
+    st.session_state.db_indicadores = df
 
 # ==============================================================================
-# INTERFAZ
+# INTERFAZ DE USUARIO
 # ==============================================================================
 
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
 
-# --- LOGIN ---
+# --- PANTALLA DE LOGIN ---
 if st.session_state.user_info is None:
-    c1, c2, c3 = st.columns([1,2,1])
+    c1, c2, c3 = st.columns([1, 1.5, 1])
     with c2:
-        if os.path.exists(LOGIN_IMAGE_FILENAME): st.image(LOGIN_IMAGE_FILENAME, use_column_width=True)
-        else: st.markdown("<h1 style='text-align: center; color: #663399;'>🏥 Christus Health</h1>", unsafe_allow_html=True)
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        st.image(LOGO_DEFAULT_URL, width=250)
+        st.markdown(f"<h3 style='text-align: center; color: {COLOR_SECONDARY};'>Portal Ciclo de Ingresos</h3>", unsafe_allow_html=True)
         
-        st.markdown("<h3 style='text-align: center;'>Acceso al Sistema Integrado</h3>", unsafe_allow_html=True)
-        
-        if db is None:
-            st.warning("⚠️ Modo desconectado: Sin conexión a Base de Datos. Los cambios se perderán al reiniciar.")
-        
-        st.markdown("---")
-        with st.form("login"):
-            u = st.text_input("Usuario")
-            p = st.text_input("Contraseña", type="password")
-            if st.form_submit_button("Ingresar"):
+        with st.form("login_form"):
+            st.markdown("##### Iniciar Sesión")
+            u = st.text_input("Usuario", placeholder="Ej: Administrador")
+            p = st.text_input("Contraseña", type="password", placeholder="••••••")
+            
+            if st.form_submit_button("INGRESAR", use_container_width=True):
                 auth = autenticar(u, p)
                 if auth is not None:
                     st.session_state.user_info = auth
-                    st.success("Bienvenido"); st.rerun()
-                else: st.error("Error de credenciales")
+                    registrar_log(u, "Login", "Exitoso")
+                    st.toast(f"Bienvenido, {u}!", icon="👋")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("Credenciales incorrectas. (Prueba: Administrador / Agosto2025)")
+        
+        st.info("ℹ️ Credenciales Demo: **Administrador** / **Agosto2025**")
     st.stop()
 
-# --- APP ---
+# --- APP PRINCIPAL ---
 user_data = st.session_state.user_info
 rol = user_data['ROL']
 area_perm = user_data['AREA_ACCESO']
 user_name = user_data['USUARIO']
 
+# Barra Lateral
 with st.sidebar:
-    if os.path.exists(LOGO_FILENAME): st.image(LOGO_FILENAME, width=200)
-    else: st.image(LOGO_DEFAULT_URL, width=180)
-    st.subheader(f"👤 {user_name}")
-    st.caption(f"Rol: {rol}")
-    if st.button("Cerrar Sesión"):
+    st.image(LOGO_DEFAULT_URL, use_column_width=True)
+    st.markdown(f"""
+        <div style="background-color: white; padding: 10px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #eee;">
+            <div style="font-weight: bold; color: {COLOR_PRIMARY}">👤 {user_name}</div>
+            <div style="font-size: 12px; color: #666;">Rol: {rol}</div>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Menú
+    menu_opts = ["📊 Dashboard", "📈 Tablero Operativo"]
+    if rol in ['ADMIN', 'ADMIN_DELEGADO', 'LIDER']: menu_opts.append("📝 Reportar Datos")
+    if rol in ['ADMIN', 'ADMIN_DELEGADO']: menu_opts.append("⚙️ Configuración")
+    
+    op = st.radio("Navegación:", menu_opts)
+    
+    st.markdown("---")
+    if st.button("Cerrar Sesión", use_container_width=True):
         st.session_state.user_info = None
         st.rerun()
-    st.markdown("---")
 
-df_ind = cargar_datos_ind()
+# Cabecera
+st.title(op.replace('📊 ', '').replace('📈 ', '').replace('📝 ', '').replace('⚙️ ', ''))
 
-# Menu
-menu = ["📊 Dashboard Indicadores (Oficial)", "📈 Tablero Operativo (Data Master)"]
-if rol in ['ADMIN', 'ADMIN_DELEGADO', 'LIDER']: menu.append("📝 Reportar Indicador")
-if rol in ['ADMIN', 'ADMIN_DELEGADO']: menu.append("⚙️ Administración")
+# --- LÓGICA DE LAS VISTAS ---
 
-op = st.sidebar.radio("Navegación:", menu)
-
-# Header
-logo = LOGO_FILENAME if os.path.exists(LOGO_FILENAME) else LOGO_DEFAULT_URL
-h1, h2 = st.columns([1, 6])
-with h1: st.image(logo, width=80)
-with h2: st.markdown(f"<h1 style='color: #663399; margin-top: -10px;'>{op.replace('📊 ', '').replace('📈 ', '').replace('📝 ', '').replace('⚙️ ', '')}</h1>", unsafe_allow_html=True)
-
-# ==========================================
-# MODULO 1: ADMINISTRACIÓN
-# ==========================================
-if op == "⚙️ Administración":
-    t_usr, t_kpi, t_cfg, t_aud = st.tabs(["👥 Usuarios", "📊 Indicadores", "🖼️ Config", "📜 Auditoría"])
+# 1. DASHBOARD
+if "Dashboard" in op:
+    df = obtener_indicadores()
     
-    with t_usr:
-        st.subheader("Gestión de Usuarios")
-        df_u = cargar_usuarios()
+    # Filtrar por área si no es ADMIN/CEO
+    if area_perm != 'TODAS':
+        df = df[df['ÁREA'] == area_perm]
+    
+    if df.empty:
+        st.info("No hay indicadores asignados a tu área.")
+    else:
+        # Filtros Superiores
+        col_f1, col_f2 = st.columns(2)
+        areas_disponibles = ['TODAS'] + list(df['ÁREA'].unique())
+        filtro_area = col_f1.selectbox("Filtrar por Área", areas_disponibles)
         
-        # VALIDACIÓN DE SEGURIDAD ESTRICTA
-        es_admin_principal = (user_name == 'Administrador')
+        df_view = df if filtro_area == 'TODAS' else df[df['ÁREA'] == filtro_area]
         
-        if not es_admin_principal:
-            st.error("⛔ Acceso Restringido: Solo el usuario 'Administrador' puede crear o modificar cuentas.")
-            st.dataframe(df_u[['USUARIO', 'ROL', 'AREA_ACCESO']], hide_index=True, use_container_width=True)
-        else:
-            st.dataframe(df_u, hide_index=True, use_container_width=True)
-            st.markdown("---")
-            c1, c2, c3 = st.columns(3)
+        # Selección de KPI
+        kpis = df_view['INDICADOR'].unique()
+        kpi_sel = st.selectbox("Seleccionar Indicador para Detalle", kpis)
+        
+        # Obtener datos del KPI seleccionado
+        row = df_view[df_view['INDICADOR'] == kpi_sel].iloc[0]
+        meta_val = row['META_VALOR']
+        meta_txt = row['META_TEXTO']
+        
+        # Datos para gráfico
+        y_vals = []
+        x_vals = []
+        ultimo_valor = 0
+        ultimo_mes = ""
+        
+        for m in MESES:
+            if pd.notna(row[m]):
+                y_vals.append(row[m])
+                x_vals.append(m)
+                ultimo_valor = row[m]
+                ultimo_mes = m
+        
+        # Tarjeta Resumen
+        c_kpi, c_chart = st.columns([1, 3])
+        
+        with c_kpi:
+            color_delta = "normal"
+            delta_val = f"Meta: {meta_txt}"
             
-            with c1:
-                st.markdown("##### ➕ Crear")
-                with st.form("add_u"):
-                    nu = st.text_input("User"); np = st.text_input("Pass", type="password")
-                    nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN_DELEGADO"])
-                    opciones_area = ['TODAS'] + list(df_ind['ÁREA'].unique())
-                    na = st.selectbox("Área Asignada", opciones_area)
-                    if st.form_submit_button("Crear"):
-                        if nu not in df_u['USUARIO'].values and nu and np:
-                            new = pd.DataFrame([[nu, np, nr, na]], columns=df_u.columns)
-                            df_u = pd.concat([df_u, new], ignore_index=True)
-                            guardar_usuarios_db(df_u)
-                            registrar_log(user_name, 'Crear Usuario', f'{nu} ({nr})')
-                            st.success("Ok"); time.sleep(1); st.rerun()
-                        else: st.warning("Error datos.")
+            # Comparación visual simple
+            is_good = False
+            if row['LOGICA'] == 'MAX': is_good = ultimo_valor >= meta_val
+            else: is_good = ultimo_valor <= meta_val
             
-            with c2:
-                st.markdown("##### 🔑 Clave")
-                u_mod = st.selectbox("Usuario", df_u['USUARIO'].unique())
-                n_p = st.text_input("Nueva Clave", type="password")
-                if st.button("Actualizar"):
-                    df_u.loc[df_u['USUARIO'] == u_mod, 'PASSWORD'] = str(n_p)
-                    guardar_usuarios_db(df_u)
-                    registrar_log(user_name, 'Cambio Clave', u_mod)
-                    st.success("Ok"); time.sleep(1); st.rerun()
+            color_val = "#27ae60" if is_good else "#c0392b"
             
-            with c3:
-                st.markdown("##### 🗑️ Borrar")
-                u_del = st.selectbox("Borrar", df_u['USUARIO'].unique())
-                if st.button("Eliminar"):
-                    if u_del != 'Administrador' and u_del != user_name:
-                        df_u = df_u[df_u['USUARIO'] != u_del]
-                        guardar_usuarios_db(df_u)
-                        registrar_log(user_name, 'Borrar Usuario', u_del)
-                        st.success("Ok"); time.sleep(1); st.rerun()
-                    else: st.error("No permitido")
+            st.markdown(f"""
+                <div class="kpi-card" style="border-left-color: {color_val}">
+                    <div class="kpi-title">Último Cierre ({ultimo_mes})</div>
+                    <div class="kpi-value" style="color: {color_val}">{ultimo_valor:.1%}</div>
+                    <div class="kpi-meta">{delta_val}</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            st.info(f"**Responsable:**\n{row['RESPONSABLE']}")
 
-    with t_kpi:
-        st.subheader("Maestro Indicadores")
-        df_m = cargar_maestro()
-        if rol in ['ADMIN', 'ADMIN_DELEGADO']:
-            ed = st.data_editor(df_m, num_rows="dynamic", use_container_width=True)
-            if st.button("Guardar KPIs"):
-                # Actualización simple para este ejemplo
-                st.warning("La edición estructural profunda requiere migración de datos históricos.")
-        else: st.dataframe(df_m)
+        with c_chart:
+            fig = go.Figure()
+            # Línea de Meta
+            fig.add_trace(go.Scatter(
+                x=MESES, y=[meta_val]*len(MESES),
+                name='Meta', line=dict(color='gray', dash='dash', width=1)
+            ))
+            # Línea Real
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=y_vals,
+                name='Real', mode='lines+markers+text',
+                line=dict(color=COLOR_PRIMARY, width=3),
+                marker=dict(size=8),
+                text=[f"{v:.1%}" for v in y_vals],
+                textposition="top center"
+            ))
+            
+            fig.update_layout(
+                title=f"Evolución: {kpi_sel}",
+                yaxis=dict(tickformat=".0%", title="Cumplimiento"),
+                xaxis=dict(title="Periodo"),
+                margin=dict(l=20, r=20, t=40, b=20),
+                height=350,
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("### 📋 Detalle Tabular")
+        st.dataframe(df_view.style.format({m: "{:.1%}" for m in MESES}), use_container_width=True)
 
-    with t_cfg:
-        if rol in ['ADMIN', 'ADMIN_DELEGADO']:
-            st.info("Imágenes (Local storage temporal)")
-            ul = st.file_uploader("Logo", key="l"); 
-            if ul and save_img_local(ul, LOGO_FILENAME): st.rerun()
-            uli = st.file_uploader("Login", key="li"); 
-            if uli and save_img_local(uli, LOGIN_IMAGE_FILENAME): st.rerun()
-        else: st.warning("Solo lectura")
+# 2. TABLERO OPERATIVO (EDICIÓN DE MASTERS)
+elif "Tablero Operativo" in op:
+    st.info("💡 Este módulo permite la gestión de los archivos planos maestros.")
+    
+    tab_nombres = list(ESTRUCTURA_COLUMNAS.keys())
+    tabs = st.tabs(tab_nombres)
+    
+    for i, key in enumerate(tab_nombres):
+        with tabs[i]:
+            df_curr = st.session_state.dfs_master[key]
+            
+            if rol == 'CEO':
+                st.dataframe(df_curr, use_container_width=True)
+            else:
+                edited_df = st.data_editor(df_curr, num_rows="dynamic", use_container_width=True, key=f"editor_{key}")
+                
+                if st.button(f"Guardar Cambios en {key}", key=f"btn_{key}"):
+                    st.session_state.dfs_master[key] = edited_df
+                    registrar_log(user_name, "Edición Operativa", f"Tabla {key}")
+                    st.success("✅ Datos actualizados correctamente en memoria.")
 
-    with t_aud:
-        st.dataframe(cargar_logs_view().iloc[::-1], use_container_width=True)
-
-elif op == "📝 Reportar Indicador":
+# 3. REPORTAR INDICADORES
+elif "Reportar Datos" in op:
+    df_ind = obtener_indicadores()
+    
+    # Filtrar areas permitidas
     areas = df_ind['ÁREA'].unique()
     if area_perm != 'TODAS': areas = [a for a in areas if a == area_perm]
     
-    c1, c2 = st.columns(2)
-    asel = c1.selectbox("Área", areas)
-    msel = c2.selectbox("Mes", MESES)
+    col1, col2 = st.columns(2)
+    area_sel = col1.selectbox("Seleccionar Área", areas)
+    mes_sel = col2.selectbox("Mes de Reporte", MESES)
     
-    df_f = df_ind[df_ind['ÁREA'] == asel]
-    with st.form("rep"):
-        inps = {}
-        for i, r in df_f.iterrows():
-            v = r[msel] if pd.notna(r[msel]) else 0.0
-            st.write(f"**{r['INDICADOR']}**"); inps[i] = st.number_input("Resultado %", value=float(v)*100, step=0.1, key=i)
+    st.markdown("---")
+    st.markdown(f"**Ingreso de datos para: {area_sel} - {mes_sel}**")
+    
+    # Filtrar DF para editar
+    df_filtered = df_ind[df_ind['ÁREA'] == area_sel].copy()
+    
+    with st.form("form_reporte"):
+        inputs = {}
+        for idx, row in df_filtered.iterrows():
+            st.markdown(f"##### {row['INDICADOR']}")
+            st.caption(f"Meta: {row['META_TEXTO']} ({row['RESPONSABLE']})")
+            
+            val_actual = row[mes_sel] if pd.notna(row[mes_sel]) else 0.0
+            # Input numérico en porcentaje (0-100)
+            inputs[idx] = st.number_input(
+                "Resultado (%)", 
+                min_value=0.0, max_value=100.0, 
+                value=float(val_actual)*100, 
+                step=0.01,
+                key=f"in_{idx}"
+            )
             st.markdown("---")
-        if st.form_submit_button("Guardar"):
-            for i, v in inps.items(): df_ind.at[i, msel] = v/100
-            guardar_datos_ind(df_ind)
-            registrar_log(user_name, 'Reporte', f'{asel} {msel}')
-            st.success("Guardado")
+            
+        if st.form_submit_button("💾 Guardar Reporte", use_container_width=True):
+            # Actualizar DF Principal
+            for idx, val in inputs.items():
+                df_ind.at[idx, mes_sel] = val / 100.0 # Convertir de nuevo a decimal
+            
+            guardar_indicadores(df_ind)
+            registrar_log(user_name, "Reporte Indicador", f"{area_sel} - {mes_sel}")
+            st.success("Datos guardados exitosamente.")
+            time.sleep(1)
+            st.rerun()
 
-elif op == "📊 Dashboard Indicadores (Oficial)":
-    df_v = df_ind if area_perm == 'TODAS' else df_ind[df_ind['ÁREA'] == area_perm]
-    if df_v.empty: st.warning("Sin datos")
-    else:
-        k = st.selectbox("KPI", df_v['INDICADOR'].unique())
-        row = df_v[df_v['INDICADOR'] == k].iloc[0]
-        y = [row[m] if pd.notna(row[m]) else None for m in MESES]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=MESES, y=[row['META_VALOR']]*len(MESES), name='Meta', line=dict(color='red', dash='dash')))
-        fig.add_trace(go.Scatter(x=MESES, y=y, name='Real', mode='lines+markers+text', text=[f"{v:.1%}" if v else "" for v in y]))
-        st.plotly_chart(fig, use_container_width=True)
+# 4. ADMINISTRACIÓN
+elif "Configuración" in op:
+    tab_usr, tab_logs = st.tabs(["👥 Gestión de Usuarios", "📜 Auditoría"])
+    
+    with tab_usr:
+        st.subheader("Usuarios del Sistema")
+        
+        # Mostrar tabla (ocultando password)
+        df_users = st.session_state.db_usuarios
+        st.dataframe(df_users[['USUARIO', 'ROL', 'AREA_ACCESO']], use_container_width=True)
+        
+        with st.expander("➕ Crear Nuevo Usuario"):
+            with st.form("new_user"):
+                nu = st.text_input("Usuario")
+                np = st.text_input("Contraseña", type="password")
+                nr = st.selectbox("Rol", ["LIDER", "CEO", "ADMIN_DELEGADO"])
+                na = st.selectbox("Área", ["TODAS"] + list(obtener_indicadores()['ÁREA'].unique()))
+                
+                if st.form_submit_button("Crear"):
+                    if nu and np:
+                        new_row = pd.DataFrame([[nu, np, nr, na]], columns=df_users.columns)
+                        st.session_state.db_usuarios = pd.concat([df_users, new_row], ignore_index=True)
+                        registrar_log(user_name, "Crear Usuario", nu)
+                        st.success("Usuario creado.")
+                        st.rerun()
+                    else:
+                        st.warning("Complete todos los campos.")
 
-elif op == "📈 Tablero Operativo (Data Master)":
-    t1, t2 = st.tabs(["KPIs", "Editor"])
-    with t1:
-        st.info("Visualización Global")
-        # Visualización simplificada
-        st.metric("Total Facturado", "$ 1.5M")
-    with t2:
-        if rol == 'CEO': st.warning("Solo lectura")
-        else:
-            dn = st.selectbox("Dataset", list(FILES_MASTER.keys()))
-            df_full = st.session_state.dfs_master[dn]
-            ed = st.data_editor(df_full, num_rows="dynamic")
-            if st.button("Guardar Dataset"):
-                st.session_state.dfs_master[dn] = ed
-                guardar_master_ops(st.session_state.dfs_master)
-                registrar_log(user_name, 'Edit Master', dn)
-                st.success("Guardado")
+    with tab_logs:
+        st.subheader("Registro de Actividad")
+        st.dataframe(
+            st.session_state.db_logs.sort_values(by="FECHA", ascending=False), 
+            use_container_width=True
+        )
+
+# Pie de página
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: #95a5a6; font-size: 0.8rem;'>"
+    "Ciclo de Ingresos Christus Health © 2025 | v2.1.0"
+    "</div>", 
+    unsafe_allow_html=True
+)
