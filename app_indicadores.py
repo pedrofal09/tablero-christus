@@ -1,302 +1,312 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
-from datetime import datetime
+import sqlite3
+import time
+import os
 
-# --- CONFIGURACIÓN DE LA BASE DE DATOS ---
-DB_NAME = "Christus_DB_Master.db"
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="Tablero Ciclo de Ingresos Christus", 
+    layout="wide", 
+    page_icon="🏥",
+    initial_sidebar_state="expanded"
+)
 
-# --- CONSTANTES DEL NEGOCIO (Listas desplegables) ---
-LISTA_ANIOS = [2025, 2026, 2027]
-LISTA_MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-]
+# --- CONSTANTES Y CONFIGURACIÓN ---
+COLOR_PRIMARY = "#663399"
+COLOR_SECONDARY = "#2c3e50"
 
-ROLES_USUARIOS = ["Admin", "Ceo", "Admin Delegado", "Lider"]
-AREAS_ACCESO = ["Todas", "Facturación", "Cuentas Medicas", "Admisiones", "Autorizaciones", "Cartera"]
+# RUTA DE LA BASE DE DATOS (Asegúrate de que esta ruta sea accesible)
+DB_PATH = r"C:\Users\pedro\OneDrive\GENERAL ANTIGUA\Escritorio\mi_proyecto_inventario\Christus_DB_Master.db"
 
-# Diccionario de tablas operativas
-OPCIONES_OPERATIVAS = {
-    "Admisiones": "ope_admisiones",
-    "Facturación": "ope_facturacion",
-    "Autorizaciones": "ope_autorizaciones",
-    "Radicación": "ope_radicacion",
-    "Cuentas Médicas": "ope_cuentas_medicas",
-    "Cartera": "ope_cartera",
-    "Provisión": "ope_provision"  # Nueva categoría agregada
+# Archivos de personalización visual (Se guardan en la misma carpeta del script)
+LOCAL_LOGO_PATH = "logo_christus_custom.png"     
+LOCAL_BANNER_PATH = "banner_christus_custom.png" 
+DEFAULT_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
+
+# ORDEN Y MAPEO DE TABLAS (SEGÚN TU REQUERIMIENTO)
+MAPA_TABLAS_OPERATIVAS = {
+    'FACTURACION': 'ope_facturacion',
+    'RADICACION': 'ope_radicacion',
+    'ADMISIONES': 'ope_admisiones',
+    'AUTORIZACIONES': 'ope_autorizaciones',
+    'CUENTAS MEDICAS': 'ope_cuentas_medicas',
+    'CARTERA': 'ope_cartera',
+    'PROVISION': 'ope_provision'
 }
 
-# --- FUNCIONES DE BASE DE DATOS ---
+# --- ESTILOS CSS ---
+st.markdown(f"""
+    <style>
+    .main {{ background-color: #f4f6f9; }}
+    .stApp {{ background-color: #f4f6f9; }}
+    div.block-container {{ padding-top: 1rem; }}
+    .kpi-card {{ 
+        background-color: #ffffff; 
+        border-radius: 10px; 
+        padding: 20px; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
+        text-align: center; 
+        border-left: 5px solid {COLOR_PRIMARY};
+        margin-bottom: 1rem;
+    }}
+    .kpi-title {{ font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }}
+    .kpi-value {{ font-size: 28px; color: {COLOR_SECONDARY}; font-weight: 900; margin: 0; }}
+    h1, h2, h3 {{ color: {COLOR_PRIMARY}; }}
+    .stButton>button {{ background-color: {COLOR_PRIMARY}; color: white; border-radius: 5px; }}
+    </style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# GESTIÓN DE BASE DE DATOS (SOLO LECTURA)
+# ==============================================================================
 
 def get_connection():
-    return sqlite3.connect(DB_NAME)
-
-def init_db():
-    conn = get_connection()
-    c = conn.cursor()
-
-    # --- BLOQUE DE AUTO-REPARACIÓN (Solución al error "no such column") ---
-    try:
-        # 1. Verificar qué columnas tiene la tabla 'usuarios' actualmente
-        c.execute("PRAGMA table_info(usuarios)")
-        columnas_existentes = [row[1] for row in c.fetchall()]
+    # Intentar ruta absoluta
+    if os.path.exists(DB_PATH):
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
+    
+    # Intentar ruta relativa (en la misma carpeta)
+    if os.path.exists("Christus_DB_Master.db"):
+        return sqlite3.connect("Christus_DB_Master.db", check_same_thread=False)
         
-        # Si la tabla existe (hay columnas) pero NO tiene 'contrasena'
-        if columnas_existentes and 'contrasena' not in columnas_existentes:
-            st.toast("🔧 Reparando estructura de base de datos...", icon="🛠️")
-            
-            # Caso A: Existe 'password' (versión vieja), la renombramos
-            if 'password' in columnas_existentes:
-                try:
-                    c.execute("ALTER TABLE usuarios RENAME COLUMN password TO contrasena")
-                    st.toast("✅ Columna 'password' renombrada a 'contrasena'", icon="✅")
-                except:
-                    # Si falla renombrar (SQLite muy viejo), agregamos la nueva
-                    c.execute("ALTER TABLE usuarios ADD COLUMN contrasena TEXT DEFAULT '1234'")
-            
-            # Caso B: No existe ni password ni contrasena, agregamos la columna
-            else:
-                c.execute("ALTER TABLE usuarios ADD COLUMN contrasena TEXT DEFAULT '1234'")
-                st.toast("✅ Columna 'contrasena' agregada.", icon="✅")
-            
-            conn.commit()
-            
-    except Exception as e:
-        # Si ocurre un error aquí (ej. la tabla no existe aún), no pasa nada, 
-        # se creará en el paso siguiente.
-        pass
+    st.error(f"⚠️ No se encuentra la base de datos en: {DB_PATH}")
+    st.info("Ejecuta el 'Gestor_Bases_Christus.py' para crearla y cargar datos.")
+    st.stop()
 
-    # 1. CATEGORÍA: DATOS DE USUARIOS
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            usuario TEXT UNIQUE NOT NULL,
-            contrasena TEXT NOT NULL,
-            rol TEXT NOT NULL,
-            area_acceso TEXT NOT NULL,
-            fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+def obtener_imagen_local(path, default=None):
+    if os.path.exists(path):
+        return path
+    return default
 
-    # 2. CATEGORÍA: BASE DE INDICADORES
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS catalogo_indicadores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            area TEXT,
-            responsable TEXT,
-            indicador TEXT,
-            fecha_carga TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-# --- FUNCIONES DE LÓGICA ---
-
-def crear_usuario(usuario, contrasena, rol, area):
+def autenticar(user, pwd):
+    """Verifica usuario y contraseña en la BD."""
     conn = get_connection()
+    df = pd.DataFrame()
+    
     try:
-        conn.execute(
-            "INSERT INTO usuarios (usuario, contrasena, rol, area_acceso) VALUES (?, ?, ?, ?)",
-            (usuario, contrasena, rol, area)
-        )
-        conn.commit()
-        return True, "Usuario creado exitosamente."
-    except sqlite3.IntegrityError:
-        return False, "El nombre de usuario ya existe."
+        # Consulta principal usando la columna creada por el gestor
+        query = "SELECT * FROM usuarios WHERE usuario = ? AND contrasena = ?"
+        df = pd.read_sql(query, conn, params=(user, pwd))
     except Exception as e:
-        return False, f"Error: {e}"
+        # Fallback por si la columna se llama diferente en versiones viejas
+        try:
+            query = "SELECT * FROM usuarios WHERE usuario = ? AND password = ?"
+            df = pd.read_sql(query, conn, params=(user, pwd))
+        except:
+            st.error(f"Error en autenticación: {e}")
     finally:
         conn.close()
+    
+    if not df.empty:
+        row = df.iloc[0]
+        return {
+            'USUARIO': row['usuario'],
+            'ROL': row.get('rol', 'Usuario'),
+            'AREA_ACCESO': row.get('area_acceso', 'Todas')
+        }
+    return None
 
-def cargar_dataframe(df, nombre_tabla, modo='append'):
+def obtener_catalogo_indicadores():
     conn = get_connection()
     try:
-        # Limpieza: Convertir nombres de columnas a string
-        df.columns = df.columns.astype(str)
-        # Guardar en SQL
-        df.to_sql(nombre_tabla, conn, if_exists=modo, index=False)
-        return True, f"✅ Carga Exitosa: {len(df)} registros procesados."
-    except Exception as e:
-        return False, f"❌ Error: {e}"
-    finally:
-        conn.close()
-
-def leer_tabla(nombre_tabla):
-    conn = get_connection()
-    try:
-        df = pd.read_sql(f"SELECT * FROM {nombre_tabla}", conn)
+        df = pd.read_sql("SELECT * FROM catalogo_indicadores", conn)
+        # Normalizar mayúsculas
+        df.columns = [c.upper() for c in df.columns]
     except:
         df = pd.DataFrame()
     finally:
         conn.close()
     return df
 
-# --- INTERFAZ DE USUARIO ---
+def buscar_tabla_inteligente(conn, nombre_objetivo):
+    """Busca tablas ignorando mayúsculas/minúsculas."""
+    try:
+        tablas_db = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)['name'].tolist()
+        
+        # 1. Exacta
+        if nombre_objetivo in tablas_db: return nombre_objetivo
+        
+        # 2. Insensible a mayúsculas
+        for t in tablas_db:
+            if t.lower() == nombre_objetivo.lower(): return t
+            
+        # 3. Aproximada (contiene la palabra clave)
+        clave = nombre_objetivo.replace('ope_', '')
+        for t in tablas_db:
+            if clave in t.lower(): return t
+            
+        return None
+    except:
+        return None
 
-def main():
-    st.set_page_config(page_title="Christus Dashboard Manager V2", page_icon="🏥", layout="wide")
+def obtener_datos_tabla(nombre_tabla_ideal):
+    conn = get_connection()
+    df = pd.DataFrame()
+    nombre_real = nombre_tabla_ideal
     
-    # Inicialización con Auto-Reparación
-    init_db()
+    tabla_real = buscar_tabla_inteligente(conn, nombre_tabla_ideal)
+    
+    if tabla_real:
+        nombre_real = tabla_real
+        try:
+            df = pd.read_sql(f"SELECT * FROM {nombre_real}", conn)
+        except:
+            pass
+            
+    conn.close()
+    return df, nombre_real
 
-    st.title("🏥 Sistema de Gestión de Datos")
-    st.markdown("Plataforma centralizada para Usuarios, Indicadores y Operaciones.")
+# ==============================================================================
+# INTERFAZ DE USUARIO
+# ==============================================================================
 
-    # MENÚ PRINCIPAL
-    categoria = st.sidebar.radio(
-        "📌 SELECCIONA LA CATEGORÍA:",
-        ["1. Datos de Usuarios", "2. Base de Indicadores", "3. Tablero Operativo"]
-    )
+if 'user_info' not in st.session_state:
+    st.session_state.user_info = None
 
+# Cargar imágenes personalizadas
+logo_actual = obtener_imagen_local(LOCAL_LOGO_PATH, DEFAULT_LOGO_URL)
+banner_actual = obtener_imagen_local(LOCAL_BANNER_PATH, None)
+
+# --- PANTALLA DE LOGIN ---
+if st.session_state.user_info is None:
+    c1, c2, c3 = st.columns([1, 1.5, 1])
+    with c2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        try:
+            if logo_actual: st.image(logo_actual, width=250)
+        except: pass
+            
+        st.markdown(f"<h3 style='text-align: center; color: {COLOR_SECONDARY};'>Visualizador Operativo</h3>", unsafe_allow_html=True)
+        
+        with st.form("login_form"):
+            u = st.text_input("Usuario")
+            p = st.text_input("Contraseña", type="password")
+            
+            if st.form_submit_button("INGRESAR", use_container_width=True):
+                user_data = autenticar(u, p)
+                if user_data:
+                    st.session_state.user_info = user_data
+                    st.rerun()
+                else:
+                    st.error("Credenciales incorrectas.")
+        
+        st.caption(f"Conexión BD: {DB_PATH}")
+    st.stop()
+
+# --- APP PRINCIPAL (DENTRO) ---
+user = st.session_state.user_info
+usuario_nombre = user['USUARIO']
+usuario_rol = user['ROL']
+usuario_area = user['AREA_ACCESO']
+
+# --- BARRA LATERAL ---
+with st.sidebar:
+    try:
+        if logo_actual: st.image(logo_actual, use_column_width=True)
+    except: st.header("Christus Health")
+    
+    st.markdown(f"""
+        <div style="padding:10px; background:white; border-radius:5px; margin-bottom:10px;">
+            <b>👤 {usuario_nombre}</b><br>
+            <small>{usuario_rol} | {usuario_area}</small>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    modo = st.radio("Navegación:", ["📊 Indicadores (KPIs)", "📈 Tablero Operativo"])
+    
     st.markdown("---")
+    
+    # Personalización Visual
+    with st.expander("🎨 Personalizar Identidad"):
+        uploaded_logo = st.file_uploader("Logo Sidebar", type=['png', 'jpg'], key="logo")
+        if uploaded_logo:
+            with open(LOCAL_LOGO_PATH, "wb") as f: f.write(uploaded_logo.getbuffer())
+            st.success("Guardado"); time.sleep(1); st.rerun()
+            
+        uploaded_banner = st.file_uploader("Banner Superior", type=['png', 'jpg'], key="banner")
+        if uploaded_banner:
+            with open(LOCAL_BANNER_PATH, "wb") as f: f.write(uploaded_banner.getbuffer())
+            st.success("Guardado"); time.sleep(1); st.rerun()
+            
+        if st.button("Restaurar Originales"):
+            if os.path.exists(LOCAL_LOGO_PATH): os.remove(LOCAL_LOGO_PATH)
+            if os.path.exists(LOCAL_BANNER_PATH): os.remove(LOCAL_BANNER_PATH)
+            st.rerun()
 
-    # =========================================================
-    # 1. CATEGORÍA: DATOS DE USUARIOS
-    # =========================================================
-    if categoria == "1. Datos de Usuarios":
-        st.header("👤 Gestión de Usuarios y Accesos")
+    if st.button("Cerrar Sesión"):
+        st.session_state.user_info = None
+        st.rerun()
 
-        col1, col2 = st.columns([1, 2])
+# --- CABECERA SUPERIOR ---
+if banner_actual:
+    try: st.image(banner_actual, use_container_width=True)
+    except: pass
 
-        with col1:
-            st.subheader("Nuevo Usuario")
-            with st.form("form_usuarios", clear_on_submit=True):
-                u_user = st.text_input("Usuario")
-                u_pass = st.text_input("Contraseña", type="password")
+st.title(modo.split(" ")[1] + " " + modo.split(" ")[2])
 
-                # Listas actualizadas según requerimiento
-                u_rol = st.selectbox("Rol Asignado", ROLES_USUARIOS)
-                u_area = st.selectbox("Área de Acceso", AREAS_ACCESO)
+# ------------------------------------------------------------------------------
+# MÓDULO 1: INDICADORES
+# ------------------------------------------------------------------------------
+if "Indicadores" in modo:
+    df = obtener_catalogo_indicadores()
+    
+    if df.empty:
+        st.info("No hay indicadores cargados en la base de datos.")
+    else:
+        # Filtrado por área de usuario
+        if usuario_area not in ['Todas', 'TODAS']:
+            col_area = 'ÁREA' if 'ÁREA' in df.columns else 'AREA'
+            if col_area in df.columns:
+                df = df[df[col_area] == usuario_area]
+        
+        st.markdown(f"**Total Indicadores:** {len(df)}")
+        st.dataframe(df, use_container_width=True)
 
-                if st.form_submit_button("Guardar"):
-                    if u_user and u_pass:
-                        exito, msg = crear_usuario(u_user, u_pass, u_rol, u_area)
-                        if exito: st.success(msg)
-                        else: st.error(msg)
-                    else:
-                        st.warning("Usuario y contraseña son obligatorios.")
+# ------------------------------------------------------------------------------
+# MÓDULO 2: TABLERO OPERATIVO (VISOR)
+# ------------------------------------------------------------------------------
+elif "Tablero Operativo" in modo:
+    # Diagnóstico oculto
+    with st.expander("🔍 Diagnóstico de Tablas (Técnico)", expanded=False):
+        conn = get_connection()
+        tbls = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)
+        st.write("Tablas encontradas:", tbls['name'].tolist())
+        conn.close()
 
-        with col2:
-            st.subheader("Base de Usuarios")
-            df_users = leer_tabla("usuarios")
-            if not df_users.empty:
-                # Mostrar contraseña oculta si existe la columna
-                if 'contrasena' in df_users.columns:
-                    df_users['contrasena'] = "****"
-                elif 'password' in df_users.columns: # Soporte legacy visual
-                    df_users['password'] = "****"
+    # Pestañas en el orden solicitado
+    pestanas = list(MAPA_TABLAS_OPERATIVAS.keys())
+    tabs = st.tabs(pestanas)
+    
+    for i, nombre_pestana in enumerate(pestanas):
+        with tabs[i]:
+            tabla_ideal = MAPA_TABLAS_OPERATIVAS[nombre_pestana]
+            df_tabla, nombre_real_db = obtener_datos_tabla(tabla_ideal)
+            
+            if not df_tabla.empty:
+                # Filtros de año/mes si existen
+                c1, c2 = st.columns(2)
+                df_view = df_tabla.copy()
                 
-                st.dataframe(df_users, use_container_width=True)
+                if 'periodo_anio' in df_view.columns:
+                    anios = sorted(df_view['periodo_anio'].astype(str).unique())
+                    sel_anio = c1.multiselect(f"Año ({nombre_pestana})", anios, default=anios, key=f"y_{i}")
+                    if sel_anio:
+                        df_view = df_view[df_view['periodo_anio'].astype(str).isin(sel_anio)]
+                        
+                if 'periodo_mes' in df_view.columns:
+                    meses = df_view['periodo_mes'].unique()
+                    sel_mes = c2.multiselect(f"Mes ({nombre_pestana})", meses, default=meses, key=f"m_{i}")
+                    if sel_mes:
+                        df_view = df_view[df_view['periodo_mes'].isin(sel_mes)]
+                
+                st.dataframe(df_view, use_container_width=True)
+                st.caption(f"Fuente: {nombre_real_db} | {len(df_view)} registros")
+                
+                # Descargar
+                csv = df_view.to_csv(index=False).encode('utf-8')
+                st.download_button("⬇️ Descargar CSV", csv, f"{nombre_pestana}.csv", "text/csv", key=f"d_{i}")
+                
             else:
-                st.info("No hay usuarios registrados.")
-
-    # =========================================================
-    # 2. CATEGORÍA: BASE DE INDICADORES
-    # =========================================================
-    elif categoria == "2. Base de Indicadores":
-        st.header("📊 Base de Indicadores")
-        st.info("💡 Columnas esperadas: **ÁREA, RESPONSABLE, INDICADOR**")
-
-        uploaded_kpi = st.file_uploader("Subir Excel/CSV de Indicadores", type=["csv", "xlsx"])
-
-        if uploaded_kpi:
-            if st.button("💾 Cargar Indicadores"):
-                try:
-                    if uploaded_kpi.name.endswith('.csv'): 
-                        df = pd.read_csv(uploaded_kpi)
-                    else: 
-                        df = pd.read_excel(uploaded_kpi)
-
-                    # Normalizamos columnas
-                    df.columns = [c.upper() for c in df.columns]
-
-                    ok, msg = cargar_dataframe(df, "catalogo_indicadores", modo="replace")
-                    if ok: st.success(msg); st.rerun()
-                    else: st.error(msg)
-                except Exception as e:
-                    st.error(f"Error procesando archivo: {e}")
-
-        st.subheader("Catálogo Actual")
-        df_kpi = leer_tabla("catalogo_indicadores")
-        st.dataframe(df_kpi, use_container_width=True)
-
-    # =========================================================
-    # 3. CATEGORÍA: TABLERO OPERATIVO (Con control de Periodos)
-    # =========================================================
-    elif categoria == "3. Tablero Operativo":
-        st.header("⚙️ Bases del Tablero Operativo")
-        st.markdown("Gestión de bases operativas por periodo.")
-
-        # Selector del proceso
-        proceso = st.selectbox(
-            "Selecciona el Proceso a Cargar/Consultar:",
-            list(OPCIONES_OPERATIVAS.keys())
-        )
-        tabla_destino = OPCIONES_OPERATIVAS[proceso]
-
-        # Ayuda visual de columnas esperadas
-        msg_cols = ""
-        if proceso == "Provisión":
-            msg_cols = "Columnas Clave: Año, Mes, Aseguradora, Fecha Corte, Provisión Acostados, Provisión Egresados, Facturado sin Radicar, Glosas Pendientes..."
-        elif proceso == "Admisiones":
-            msg_cols = "Columnas Clave: AÑO, MES, Sede, Cantidad Actividades..."
-
-        if msg_cols:
-            st.info(f"ℹ️ {msg_cols}")
-
-        # Sección de Carga
-        with st.expander(f"📤 Cargar Datos para: {proceso}", expanded=True):
-
-            # --- NUEVO: SELECTORES DE PERIODO ---
-            st.markdown("##### 📅 Definir Periodo de la Información")
-            c_anio, c_mes = st.columns(2)
-            anio_sel = c_anio.selectbox("Año de Gestión", LISTA_ANIOS)
-            mes_sel = c_mes.selectbox("Mes de Gestión", LISTA_MESES)
-
-            st.markdown("---")
-            uploaded_ope = st.file_uploader(f"Subir Archivo ({proceso})", type=["csv", "xlsx"])
-
-            if uploaded_ope:
-                col_mode, col_btn = st.columns([2, 1])
-                with col_mode:
-                    modo = st.radio("Método:", ["Agregar (Append)", "Reemplazar (Replace)"], horizontal=True)
-                    modo_sql = 'append' if 'Append' in modo else 'replace'
-
-                with col_btn:
-                    st.write("")
-                    if st.button(f"Procesar {proceso}"):
-                        try:
-                            if uploaded_ope.name.endswith('.csv'): df = pd.read_csv(uploaded_ope)
-                            else: df = pd.read_excel(uploaded_ope)
-                            
-                            # --- ESTAMPADO DE FECHA Y PERIODO ---
-                            df['periodo_anio'] = anio_sel
-                            df['periodo_mes'] = mes_sel
-                            df['fecha_carga_sistema'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                            ok, msg = cargar_dataframe(df, tabla_destino, modo=modo_sql)
-                            if ok: st.success(msg); st.rerun()
-                            else: st.error(msg)
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
-        # Sección de Visualización
-        st.subheader(f"Vista de Datos: {proceso}")
-        df_ope = leer_tabla(tabla_destino)
-        if not df_ope.empty:
-            # Filtros simples
-            if 'periodo_anio' in df_ope.columns:
-                filtro_anio = st.multiselect("Filtrar por Año:", df_ope['periodo_anio'].unique(), default=df_ope['periodo_anio'].unique())
-                if filtro_anio:
-                    df_ope = df_ope[df_ope['periodo_anio'].isin(filtro_anio)]
-
-            st.dataframe(df_ope, use_container_width=True)
-            st.metric("Total Registros", len(df_ope))
-        else:
-            st.warning(f"La base de datos de {proceso} está vacía.")
-
-if __name__ == "__main__":
-    main()
+                st.warning(f"No hay datos para **{nombre_pestana}**.")
+                st.info(f"El sistema buscó la tabla '{tabla_ideal}' (o similares) pero no encontró registros.")
