@@ -294,6 +294,7 @@ if nav == "🚀 Dashboard Gerencial":
     # Filtros Globales
     col_f1, col_f2 = st.columns(2)
     anio_dash = col_f1.selectbox("Seleccionar Año:", LISTA_ANIOS, index=0)
+    mes_dash = col_f2.selectbox("Seleccionar Mes:", ["Todos"] + LISTA_MESES, index=0)
     
     # Obtener Datos Clave
     df_fact, _ = obtener_datos('FACTURACION', 'ope_facturacion')
@@ -301,18 +302,29 @@ if nav == "🚀 Dashboard Gerencial":
     df_cart, _ = obtener_datos('CARTERA', 'ope_cartera')
     df_adm, _ = obtener_datos('ADMISIONES', 'ope_admisiones')
 
-    # Filtrar por año si es posible
-    def filtrar_anio(df, anio):
+    # Función de filtrado por periodo (Año y Mes)
+    def filtrar_dashboard(df, anio, mes):
         if df.empty: return df
+        
+        # Filtro de Año
         col_anio = buscar_columna_inteligente(df, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
         if col_anio:
-            return df[df[col_anio].astype(str) == str(anio)]
+            df = df[df[col_anio].astype(str) == str(anio)]
+            
+        # Filtro de Mes (si no es 'Todos')
+        if mes != "Todos":
+            col_mes = buscar_columna_inteligente(df, ['MES', 'MONTH', 'PERIODO_MES'])
+            if col_mes:
+                mes_norm = normalize_text(mes)
+                df = df[df[col_mes].astype(str).apply(normalize_text) == mes_norm]
+                
         return df
 
-    df_fact = filtrar_anio(df_fact, anio_dash)
-    df_rad = filtrar_anio(df_rad, anio_dash)
-    df_cart = filtrar_anio(df_cart, anio_dash)
-    df_adm = filtrar_anio(df_adm, anio_dash)
+    # Aplicar filtros a los dataframes
+    df_fact = filtrar_dashboard(df_fact, anio_dash, mes_dash)
+    df_rad = filtrar_dashboard(df_rad, anio_dash, mes_dash)
+    df_cart = filtrar_dashboard(df_cart, anio_dash, mes_dash)
+    df_adm = filtrar_dashboard(df_adm, anio_dash, mes_dash)
 
     # --- KPIs Cards ---
     col1, col2, col3, col4 = st.columns(4)
