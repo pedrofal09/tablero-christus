@@ -141,23 +141,60 @@ def obtener_catalogo_indicadores():
     
     return df
 
-def obtener_datos_operativos_con_info(nombre_tabla):
+def buscar_tabla_inteligente(conn, nombre_objetivo):
     """
-    Intenta leer la tabla y devuelve (DataFrame, MensajeError).
-    Esto permite diagnosticar por qué una tabla está vacía.
+    Busca si existe una tabla con nombre similar (insensible a mayúsculas o prefijos).
+    Ejemplo: Si busco 'ope_cartera' pero existe 'tbl_Cartera', la encuentra.
+    """
+    try:
+        # Obtener todas las tablas de la BD
+        tablas_existentes = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)['name'].tolist()
+        
+        # 1. Intento Exacto
+        if nombre_objetivo in tablas_existentes:
+            return nombre_objetivo
+            
+        # 2. Intento Case-Insensitive (ope_cartera == OPE_CARTERA)
+        for t in tablas_existentes:
+            if t.lower() == nombre_objetivo.lower():
+                return t
+        
+        # 3. Intento por Palabra Clave (cartera en ope_facturacion_cartera)
+        # Extraemos la palabra clave (ej. 'cartera' de 'ope_cartera')
+        clave = nombre_objetivo.replace('ope_', '').replace('tbl_', '')
+        for t in tablas_existentes:
+            if clave in t.lower():
+                return t
+                
+        return None
+    except:
+        return None
+
+def obtener_datos_operativos_con_info(nombre_tabla_ideal):
+    """
+    Intenta leer la tabla usando búsqueda inteligente.
+    Retorna: DataFrame, MensajeError, NombreRealTabla
     """
     conn = get_connection()
     df = pd.DataFrame()
     error_msg = None
+    nombre_real = nombre_tabla_ideal
     
-    try:
-        df = pd.read_sql(f"SELECT * FROM {nombre_tabla}", conn)
-    except Exception as e:
-        error_msg = str(e)
-    finally:
-        conn.close()
+    # Usar el buscador inteligente
+    tabla_encontrada = buscar_tabla_inteligente(conn, nombre_tabla_ideal)
+    
+    if tabla_encontrada:
+        nombre_real = tabla_encontrada
+        try:
+            df = pd.read_sql(f"SELECT * FROM {nombre_real}", conn)
+        except Exception as e:
+            error_msg = str(e)
+    else:
+        # Si no encuentra nada parecido, retornamos error de no existe
+        error_msg = f"no such table: {nombre_tabla_ideal} (y no se encontraron similares)"
         
-    return df, error_msg
+    conn.close()
+    return df, error_msg, nombre_real
 
 # ==============================================================================
 # INTERFAZ DE USUARIO
@@ -316,10 +353,14 @@ elif "Tablero Operativo" in op:
     
     for i, nombre_ui in enumerate(nombres_tablas):
         with tabs[i]:
-            tabla_bd = MAPA_TABLAS_OPERATIVAS[nombre_ui]
-            df, error = obtener_datos_operativos_con_info(tabla_bd)
+            tabla_ideal = MAPA_TABLAS_OPERATIVAS[nombre_ui]
+            df, error, tabla_real = obtener_datos_operativos_con_info(tabla_ideal)
             
             if not df.empty:
+                # Aviso si el nombre no era el ideal pero se encontró
+                if tabla_real != tabla_ideal:
+                    st.success(f"✅ Se encontraron datos en la tabla alternativa: **{tabla_real}**")
+                
                 if 'periodo_anio' in df.columns:
                     anios = df['periodo_anio'].unique()
                     st.caption(f"📅 Años disponibles: {list(anios)}")
@@ -330,15 +371,15 @@ elif "Tablero Operativo" in op:
                 st.download_button(
                     f"⬇️ Descargar {nombre_ui}",
                     csv,
-                    f"{tabla_bd}.csv",
+                    f"{tabla_real}.csv",
                     "text/csv",
                     key=f"dl_{i}"
                 )
             else:
                 if error and "no such table" in str(error):
-                    st.error(f"❌ La tabla **'{tabla_bd}'** NO EXISTE en la base de datos.")
-                    st.info("Posible causa: No has cargado el archivo correspondiente usando el 'Script Gestor', o el nombre interno es diferente.")
+                    st.error(f"❌ No se encontró la tabla **'{tabla_ideal}'** ni ninguna similar.")
+                    st.info("Asegúrate de haber cargado el archivo correspondiente en el Script Gestor.")
                 elif error:
                     st.error(f"Error SQL: {error}")
                 else:
-                    st.warning(f"⚠️ La tabla **'{tabla_bd}'** existe pero tiene 0 registros.")
+                    st.warning(f"⚠️ La tabla **'{tabla_real}'** existe pero tiene 0 registros.")
