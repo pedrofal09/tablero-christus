@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
 import sqlite3
 import time
 import os
@@ -17,9 +19,9 @@ st.set_page_config(
 # --- CONSTANTES Y CONFIGURACIÓN ---
 COLOR_PRIMARY = "#663399"
 COLOR_SECONDARY = "#2c3e50"
+COLOR_ACCENT = "#e67e22"
 
 # RUTA DE LA BASE DE DATOS
-# Intenta usar la ruta absoluta, si falla usa la local
 DB_PATH_ABSOLUTE = r"C:\Users\pedro\OneDrive\GENERAL ANTIGUA\Escritorio\mi_proyecto_inventario\Christus_DB_Master.db"
 DB_NAME_LOCAL = "Christus_DB_Master.db"
 
@@ -32,7 +34,7 @@ LISTA_MESES = [
 ROLES_USUARIOS = ["Admin", "Ceo", "Admin Delegado", "Lider"]
 AREAS_ACCESO = ["Todas", "Facturación", "Cuentas Medicas", "Admisiones", "Autorizaciones", "Cartera"]
 
-# Mapeo de Tablas Operativas (Coincidencia exacta entre Visualizador y Gestor)
+# Mapeo de Tablas Operativas
 MAPA_TABLAS_OPERATIVAS = {
     'FACTURACION': 'ope_facturacion',
     'RADICACION': 'ope_radicacion',
@@ -56,13 +58,17 @@ st.markdown(f"""
     div.block-container {{ padding-top: 1rem; }}
     .kpi-card {{ 
         background-color: #ffffff; 
-        border-radius: 10px; 
+        border-radius: 12px; 
         padding: 20px; 
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05); 
         text-align: center; 
         border-left: 5px solid {COLOR_PRIMARY};
         margin-bottom: 1rem;
+        transition: transform 0.2s;
     }}
+    .kpi-card:hover {{ transform: translateY(-5px); }}
+    .kpi-title {{ font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }}
+    .kpi-value {{ font-size: 32px; color: {COLOR_SECONDARY}; font-weight: 800; margin-top: 5px; }}
     .stAlert {{ margin-top: 1rem; }}
     </style>
 """, unsafe_allow_html=True)
@@ -73,7 +79,6 @@ st.markdown(f"""
 
 def get_connection():
     """Devuelve la conexión a la BD, creándola si no existe."""
-    # Prioridad: Ruta absoluta -> Ruta local -> Crear local
     path = DB_NAME_LOCAL
     if os.path.exists(DB_PATH_ABSOLUTE):
         path = DB_PATH_ABSOLUTE
@@ -86,18 +91,15 @@ def init_db():
     conn, _ = get_connection()
     c = conn.cursor()
 
-    # 1. Tabla Usuarios (Auto-reparación de columnas)
     try:
         c.execute("CREATE TABLE IF NOT EXISTS usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT UNIQUE NOT NULL, rol TEXT, area_acceso TEXT)")
-        # Verificar columna contraseña
         cols = [info[1] for info in c.execute("PRAGMA table_info(usuarios)")]
         if 'contrasena' not in cols:
             try: c.execute("ALTER TABLE usuarios ADD COLUMN contrasena TEXT DEFAULT '1234'")
-            except: pass # Si falla es porque ya existe con otro nombre o sqlite viejo
+            except: pass 
     except Exception as e:
         print(f"Error init usuarios: {e}")
 
-    # 2. Tabla Indicadores
     c.execute("""
         CREATE TABLE IF NOT EXISTS catalogo_indicadores (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,11 +112,10 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Ejecutar inicialización al cargar el script
 init_db()
 
 # ==============================================================================
-# 2. FUNCIONES DE LECTURA (VISUALIZADOR)
+# 2. FUNCIONES DE LECTURA E INTELIGENCIA
 # ==============================================================================
 
 def normalize_text(text):
@@ -122,11 +123,19 @@ def normalize_text(text):
     text = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
     return text.upper().strip()
 
+def buscar_columna_inteligente(df, palabras_clave):
+    """Busca una columna que contenga alguna de las palabras clave."""
+    cols_norm = {normalize_text(c): c for c in df.columns}
+    for kw in palabras_clave:
+        kw_norm = normalize_text(kw)
+        for col_n, col_real in cols_norm.items():
+            if kw_norm in col_n:
+                return col_real
+    return None
+
 def autenticar(user, pwd):
     conn, _ = get_connection()
-    df = pd.DataFrame()
     try:
-        # Intentar leer usuario
         query = "SELECT * FROM usuarios"
         all_users = pd.read_sql(query, conn)
         
@@ -158,12 +167,9 @@ def autenticar(user, pwd):
 def buscar_tabla_inteligente(conn, nombre_objetivo):
     try:
         tablas = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)['name'].tolist()
-        # 1. Exacta
         if nombre_objetivo in tablas: return nombre_objetivo
-        # 2. Insensible a mayúsculas
         for t in tablas:
             if t.lower() == nombre_objetivo.lower(): return t
-        # 3. Aproximada
         clave = nombre_objetivo.replace('ope_', '')
         for t in tablas:
             if clave in t.lower(): return t
@@ -181,46 +187,36 @@ def obtener_datos(nombre_ui, nombre_tabla_ideal):
     return df, tabla_real
 
 # ==============================================================================
-# 3. FUNCIONES DE ESCRITURA (GESTOR/CARGA)
+# 3. FUNCIONES DE ESCRITURA (GESTOR)
 # ==============================================================================
 
 def crear_usuario_bd(usuario, contrasena, rol, area):
     conn, _ = get_connection()
     try:
-        # Verificar columnas para insert correcto
         cols = [info[1] for info in conn.execute("PRAGMA table_info(usuarios)")]
         col_pwd = 'contrasena' if 'contrasena' in cols else 'password'
-        
-        conn.execute(
-            f"INSERT INTO usuarios (usuario, {col_pwd}, rol, area_acceso) VALUES (?, ?, ?, ?)",
-            (usuario, contrasena, rol, area)
-        )
+        conn.execute(f"INSERT INTO usuarios (usuario, {col_pwd}, rol, area_acceso) VALUES (?, ?, ?, ?)", (usuario, contrasena, rol, area))
         conn.commit()
         return True, "Usuario creado exitosamente."
-    except sqlite3.IntegrityError:
-        return False, "El usuario ya existe."
-    except Exception as e:
-        return False, f"Error: {e}"
-    finally:
-        conn.close()
+    except sqlite3.IntegrityError: return False, "El usuario ya existe."
+    except Exception as e: return False, f"Error: {e}"
+    finally: conn.close()
 
 def cargar_dataframe_bd(df, nombre_tabla, modo='append'):
     conn, _ = get_connection()
     try:
-        df.columns = df.columns.astype(str) # Asegurar nombres de columnas string
+        df.columns = df.columns.astype(str)
         df.to_sql(nombre_tabla, conn, if_exists=modo, index=False)
         return True, f"✅ Éxito: {len(df)} registros procesados."
-    except Exception as e:
-        return False, f"❌ Error SQL: {e}"
-    finally:
-        conn.close()
+    except Exception as e: return False, f"❌ Error SQL: {e}"
+    finally: conn.close()
 
 def obtener_imagen_local(path, default=None):
     if os.path.exists(path): return path
     return default
 
 # ==============================================================================
-# INTERFAZ DE USUARIO PRINCIPAL
+# INTERFAZ PRINCIPAL
 # ==============================================================================
 
 if 'user_info' not in st.session_state:
@@ -238,7 +234,6 @@ if st.session_state.user_info is None:
         except: pass
         st.markdown(f"<h3 style='text-align: center; color: {COLOR_SECONDARY};'>Portal Integral Christus</h3>", unsafe_allow_html=True)
         
-        # Diagnóstico
         conn_test, path_used = get_connection()
         if conn_test:
             conn_test.close()
@@ -270,10 +265,9 @@ with st.sidebar:
     
     st.info(f"👤 {user['USUARIO']}\n\nRol: {rol_usuario}")
     
-    # Menú extendido con Gestor
-    opciones_menu = ["📊 Indicadores", "📈 Tablero Operativo"]
+    # Menú Principal
+    opciones_menu = ["🚀 Dashboard Gerencial", "📊 Indicadores", "📈 Tablero Operativo"]
     
-    # Solo roles autorizados pueden ver el Gestor de Carga
     if normalize_text(rol_usuario) in ['ADMIN', 'CEO', 'ADMIN DELEGADO', 'LIDER', 'ADMINISTRADOR']:
         opciones_menu.append("📂 Gestión y Carga")
     
@@ -292,27 +286,153 @@ if banner_actual:
 st.title(nav)
 
 # ==============================================================================
-# MÓDULO 1: INDICADORES (VISUALIZACIÓN)
+# MÓDULO 1: DASHBOARD GERENCIAL (NUEVO)
 # ==============================================================================
-if nav == "📊 Indicadores":
+if nav == "🚀 Dashboard Gerencial":
+    st.markdown("### Visión Estratégica Integral")
+    
+    # Filtros Globales
+    col_f1, col_f2 = st.columns(2)
+    anio_dash = col_f1.selectbox("Seleccionar Año:", LISTA_ANIOS, index=0)
+    
+    # Obtener Datos Clave
+    df_fact, _ = obtener_datos('FACTURACION', 'ope_facturacion')
+    df_rad, _ = obtener_datos('RADICACION', 'ope_radicacion')
+    df_cart, _ = obtener_datos('CARTERA', 'ope_cartera')
+    df_adm, _ = obtener_datos('ADMISIONES', 'ope_admisiones')
+
+    # Filtrar por año si es posible
+    def filtrar_anio(df, anio):
+        if df.empty: return df
+        col_anio = buscar_columna_inteligente(df, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
+        if col_anio:
+            return df[df[col_anio].astype(str) == str(anio)]
+        return df
+
+    df_fact = filtrar_anio(df_fact, anio_dash)
+    df_rad = filtrar_anio(df_rad, anio_dash)
+    df_cart = filtrar_anio(df_cart, anio_dash)
+    df_adm = filtrar_anio(df_adm, anio_dash)
+
+    # --- KPIs Cards ---
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # KPI 1: Facturación
+    col_val_fact = buscar_columna_inteligente(df_fact, ['VALOR', 'FACTURADO', 'TOTAL'])
+    total_fact = df_fact[col_val_fact].sum() if not df_fact.empty and col_val_fact else 0
+    
+    with col1:
+        st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">Facturación Total</div>
+                <div class="kpi-value">${total_fact:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # KPI 2: Radicación
+    col_val_rad = buscar_columna_inteligente(df_rad, ['VALOR', 'RADICADO'])
+    total_rad = df_rad[col_val_rad].sum() if not df_rad.empty and col_val_rad else 0
+    
+    with col2:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left-color: {COLOR_ACCENT}">
+                <div class="kpi-title">Radicación Total</div>
+                <div class="kpi-value">${total_rad:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # KPI 3: Recaudo (Cartera)
+    col_val_recaudo = buscar_columna_inteligente(df_cart, ['RECAUDO', 'REAL'])
+    total_recaudo = df_cart[col_val_recaudo].sum() if not df_cart.empty and col_val_recaudo else 0
+    
+    with col3:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left-color: #27ae60">
+                <div class="kpi-title">Recaudo Real</div>
+                <div class="kpi-value">${total_recaudo:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # KPI 4: Admisiones
+    col_adm_cant = buscar_columna_inteligente(df_adm, ['CANTIDAD', 'ACTIVIDADES', 'PACIENTES'])
+    total_adm = df_adm[col_adm_cant].sum() if not df_adm.empty and col_adm_cant else 0
+    
+    with col4:
+        st.markdown(f"""
+            <div class="kpi-card" style="border-left-color: #3498db">
+                <div class="kpi-title">Total Admisiones</div>
+                <div class="kpi-value">{total_adm:,.0f}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    # --- GRÁFICOS ---
+    c_chart1, c_chart2 = st.columns(2)
+
+    with c_chart1:
+        st.subheader("📊 Tendencia del Ciclo Financiero")
+        # Preparar datos para gráfico multilínea
+        datos_grafico = []
+        
+        def preparar_datos_tiempo(df, col_val, etiqueta):
+            if df.empty or not col_val: return
+            col_mes = buscar_columna_inteligente(df, ['MES', 'MONTH'])
+            if col_mes:
+                agrupado = df.groupby(col_mes)[col_val].sum().reset_index()
+                # Ordenar meses (simple)
+                agrupado['Mes_Num'] = agrupado[col_mes].apply(lambda x: LISTA_MESES.index(x) if x in LISTA_MESES else 99)
+                agrupado = agrupado.sort_values('Mes_Num')
+                
+                for _, row in agrupado.iterrows():
+                    datos_grafico.append({'Mes': row[col_mes], 'Valor': row[col_val], 'Tipo': etiqueta})
+
+        preparar_datos_tiempo(df_fact, col_val_fact, 'Facturado')
+        preparar_datos_tiempo(df_rad, col_val_rad, 'Radicado')
+        preparar_datos_tiempo(df_cart, col_val_recaudo, 'Recaudado')
+        
+        if datos_grafico:
+            df_chart = pd.DataFrame(datos_grafico)
+            fig = px.line(df_chart, x='Mes', y='Valor', color='Tipo', markers=True, 
+                          color_discrete_map={'Facturado': COLOR_PRIMARY, 'Radicado': COLOR_ACCENT, 'Recaudado': '#27ae60'})
+            fig.update_layout(height=350, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Faltan datos de fechas para generar el gráfico de tendencias.")
+
+    with c_chart2:
+        st.subheader("🏢 Top Aseguradoras (Facturación)")
+        col_aseg = buscar_columna_inteligente(df_fact, ['ASEGURADORA', 'CLIENTE', 'EPS'])
+        
+        if not df_fact.empty and col_aseg and col_val_fact:
+            df_top = df_fact.groupby(col_aseg)[col_val_fact].sum().reset_index()
+            df_top = df_top.sort_values(col_val_fact, ascending=False).head(7)
+            
+            fig2 = px.bar(df_top, x=col_val_fact, y=col_aseg, orientation='h', 
+                          text_auto='.2s', color=col_val_fact, color_continuous_scale='Purples')
+            fig2.update_layout(yaxis={'categoryorder':'total ascending'}, height=350, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("No se encontraron columnas de Aseguradora/Valor para el gráfico.")
+
+# ==============================================================================
+# MÓDULO 2: INDICADORES (VISUALIZACIÓN)
+# ==============================================================================
+elif nav == "📊 Indicadores":
     df, _ = obtener_datos("INDICADORES", "catalogo_indicadores")
     
     if df.empty:
         st.warning("No hay indicadores. Ve a 'Gestión y Carga' para subir el archivo base.")
     else:
-        # Filtros de visualización
         df.columns = [normalize_text(c) for c in df.columns]
         col_area = next((c for c in df.columns if 'AREA' in c), None)
         
         if col_area:
-            # Si no es Admin/Todas, filtra
             if normalize_text(area_usuario) not in ['TODAS', 'ALL'] and normalize_text(rol_usuario) not in ['ADMIN', 'CEO']:
                 df = df[df[col_area].apply(normalize_text) == normalize_text(area_usuario)]
         
         st.dataframe(df, use_container_width=True)
 
 # ==============================================================================
-# MÓDULO 2: TABLERO OPERATIVO (VISUALIZACIÓN)
+# MÓDULO 3: TABLERO OPERATIVO (VISUALIZACIÓN)
 # ==============================================================================
 elif nav == "📈 Tablero Operativo":
     tabs = st.tabs(list(MAPA_TABLAS_OPERATIVAS.keys()))
@@ -322,10 +442,8 @@ elif nav == "📈 Tablero Operativo":
             df, real_name = obtener_datos(nombre_ui, nombre_tabla)
             
             if not df.empty:
-                # Filtros de Fecha
                 df_view = df.copy()
-                cols_norm = {c: normalize_text(c) for c in df.columns}
-                col_anio = next((c for c, cn in cols_norm.items() if 'ANIO' in cn or 'YEAR' in cn), None)
+                col_anio = buscar_columna_inteligente(df_view, ['ANIO', 'YEAR'])
                 
                 if col_anio:
                     anios = sorted(df_view[col_anio].astype(str).unique())
@@ -338,7 +456,7 @@ elif nav == "📈 Tablero Operativo":
                 st.info(f"Sin datos en {nombre_ui}. Usa 'Gestión y Carga' para alimentar esta base.")
 
 # ==============================================================================
-# MÓDULO 3: GESTIÓN Y CARGA (ADMINISTRACIÓN)
+# MÓDULO 4: GESTIÓN Y CARGA (ADMINISTRACIÓN)
 # ==============================================================================
 elif nav == "📂 Gestión y Carga":
     st.markdown("### 🛠️ Centro de Control de Datos")
