@@ -28,11 +28,12 @@ DEFAULT_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Ch
 MESES = ['NOV-25', 'DIC-25', 'ENE-26', 'FEB-26', 'MAR-26', 'ABR-26', 'MAY-26', 
          'JUN-26', 'JUL-26', 'AGO-26', 'SEP-26', 'OCT-26', 'NOV-26', 'DIC-26']
 
+# Mapeo de Tablas Operativas (Ordenado según flujo de negocio solicitado)
 MAPA_TABLAS_OPERATIVAS = {
-    'ADMISIONES': 'ope_admisiones',
     'FACTURACION': 'ope_facturacion',
-    'AUTORIZACIONES': 'ope_autorizaciones',
     'RADICACION': 'ope_radicacion',
+    'ADMISIONES': 'ope_admisiones',
+    'AUTORIZACIONES': 'ope_autorizaciones',
     'CUENTAS MEDICAS': 'ope_cuentas_medicas',
     'CARTERA': 'ope_cartera',
     'PROVISION': 'ope_provision'
@@ -140,14 +141,23 @@ def obtener_catalogo_indicadores():
     
     return df
 
-def obtener_datos_operativos(nombre_tabla):
+def obtener_datos_operativos_con_info(nombre_tabla):
+    """
+    Intenta leer la tabla y devuelve (DataFrame, MensajeError).
+    Esto permite diagnosticar por qué una tabla está vacía.
+    """
     conn = get_connection()
+    df = pd.DataFrame()
+    error_msg = None
+    
     try:
         df = pd.read_sql(f"SELECT * FROM {nombre_tabla}", conn)
-    except:
-        df = pd.DataFrame()
-    conn.close()
-    return df
+    except Exception as e:
+        error_msg = str(e)
+    finally:
+        conn.close()
+        
+    return df, error_msg
 
 # ==============================================================================
 # INTERFAZ DE USUARIO
@@ -290,6 +300,16 @@ if "Indicadores" in op:
 # 2. VISUALIZADOR TABLERO OPERATIVO
 elif "Tablero Operativo" in op:
     st.info(f"Vista de solo lectura de las bases operativas.")
+
+    # --- HERRAMIENTA DE DIAGNÓSTICO ---
+    with st.expander("🔍 Ver tablas existentes en BD (Diagnóstico)", expanded=False):
+        conn = get_connection()
+        try:
+            tablas_db = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)
+            st.write("Tablas encontradas en el archivo .db:", tablas_db['name'].tolist())
+        except Exception as e:
+            st.error(f"Error al leer esquema: {e}")
+        conn.close()
     
     nombres_tablas = list(MAPA_TABLAS_OPERATIVAS.keys())
     tabs = st.tabs(nombres_tablas)
@@ -297,7 +317,7 @@ elif "Tablero Operativo" in op:
     for i, nombre_ui in enumerate(nombres_tablas):
         with tabs[i]:
             tabla_bd = MAPA_TABLAS_OPERATIVAS[nombre_ui]
-            df = obtener_datos_operativos(tabla_bd)
+            df, error = obtener_datos_operativos_con_info(tabla_bd)
             
             if not df.empty:
                 if 'periodo_anio' in df.columns:
@@ -315,13 +335,10 @@ elif "Tablero Operativo" in op:
                     key=f"dl_{i}"
                 )
             else:
-                st.warning(f"La tabla de **{nombre_ui}** está vacía en la base de datos.")
-
-# Pie de página
-st.markdown("---")
-st.markdown(
-    "<div style='text-align: center; color: #95a5a6; font-size: 0.8rem;'>"
-    "Visualizador Christus Health © 2026"
-    "</div>", 
-    unsafe_allow_html=True
-)
+                if error and "no such table" in str(error):
+                    st.error(f"❌ La tabla **'{tabla_bd}'** NO EXISTE en la base de datos.")
+                    st.info("Posible causa: No has cargado el archivo correspondiente usando el 'Script Gestor', o el nombre interno es diferente.")
+                elif error:
+                    st.error(f"Error SQL: {error}")
+                else:
+                    st.warning(f"⚠️ La tabla **'{tabla_bd}'** existe pero tiene 0 registros.")
