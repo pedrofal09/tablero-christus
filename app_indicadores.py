@@ -129,6 +129,12 @@ def buscar_columna_inteligente(df, palabras_clave):
     for kw in palabras_clave:
         kw_norm = normalize_text(kw)
         for col_n, col_real in cols_norm.items():
+            if kw_norm == col_n: # Prioridad coincidencia exacta
+                return col_real
+    # Si no hay exacta, buscar parcial
+    for kw in palabras_clave:
+        kw_norm = normalize_text(kw)
+        for col_n, col_real in cols_norm.items():
             if kw_norm in col_n:
                 return col_real
     return None
@@ -202,10 +208,28 @@ def crear_usuario_bd(usuario, contrasena, rol, area):
     except Exception as e: return False, f"Error: {e}"
     finally: conn.close()
 
-def cargar_dataframe_bd(df, nombre_tabla, modo='append'):
+def cargar_dataframe_bd(df, nombre_tabla, modo='append', anio_sel=None, mes_sel=None):
     conn, _ = get_connection()
     try:
+        # Asegurar columnas de periodo
+        col_anio = buscar_columna_inteligente(df, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
+        col_mes = buscar_columna_inteligente(df, ['MES', 'MONTH', 'PERIODO_MES'])
+        
+        # Si no existen en el archivo o están vacías, usamos las seleccionadas
+        if not col_anio and anio_sel:
+            df['PERIODO_ANIO'] = anio_sel
+        elif col_anio and anio_sel:
+             # Opcional: Rellenar vacíos con la selección
+             df[col_anio] = df[col_anio].fillna(anio_sel)
+
+        if not col_mes and mes_sel:
+            df['PERIODO_MES'] = mes_sel
+        elif col_mes and mes_sel:
+             df[col_mes] = df[col_mes].fillna(mes_sel)
+
+        df['fecha_carga'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         df.columns = df.columns.astype(str)
+        
         df.to_sql(nombre_tabla, conn, if_exists=modo, index=False)
         return True, f"✅ Éxito: {len(df)} registros procesados."
     except Exception as e: return False, f"❌ Error SQL: {e}"
@@ -286,147 +310,145 @@ if banner_actual:
 st.title(nav)
 
 # ==============================================================================
-# MÓDULO 1: DASHBOARD GERENCIAL (NUEVO)
+# FUNCIONES COMUNES DE FILTRADO
+# ==============================================================================
+def filtrar_por_periodo(df, anio, mes):
+    """Filtra un DataFrame genérico por Año y Mes usando búsqueda inteligente de columnas."""
+    if df.empty: return df
+    
+    df_filtrado = df.copy()
+    
+    # 1. Filtro Año
+    col_anio = buscar_columna_inteligente(df_filtrado, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
+    if col_anio and anio:
+        df_filtrado = df_filtrado[df_filtrado[col_anio].astype(str) == str(anio)]
+        
+    # 2. Filtro Mes
+    if mes and mes != "Todos":
+        col_mes = buscar_columna_inteligente(df_filtrado, ['MES', 'MONTH', 'PERIODO_MES'])
+        if col_mes:
+            mes_norm = normalize_text(mes)
+            # Normalizamos la columna para comparar
+            df_filtrado['TEMP_MES_NORM'] = df_filtrado[col_mes].astype(str).apply(normalize_text)
+            df_filtrado = df_filtrado[df_filtrado['TEMP_MES_NORM'] == mes_norm].drop(columns=['TEMP_MES_NORM'])
+            
+    return df_filtrado
+
+# ==============================================================================
+# MÓDULO 1: DASHBOARD GERENCIAL
 # ==============================================================================
 if nav == "🚀 Dashboard Gerencial":
     st.markdown("### Visión Estratégica Integral")
     
-    # Filtros Globales
+    # --- FILTROS GLOBALES ---
+    st.markdown("##### 📅 Filtros de Periodo")
     col_f1, col_f2 = st.columns(2)
     anio_dash = col_f1.selectbox("Seleccionar Año:", LISTA_ANIOS, index=0)
     mes_dash = col_f2.selectbox("Seleccionar Mes:", ["Todos"] + LISTA_MESES, index=0)
+    st.markdown("---")
     
-    # Obtener Datos Clave
+    # 1. Obtener Datos Crudos
     df_fact, _ = obtener_datos('FACTURACION', 'ope_facturacion')
     df_rad, _ = obtener_datos('RADICACION', 'ope_radicacion')
     df_cart, _ = obtener_datos('CARTERA', 'ope_cartera')
     df_adm, _ = obtener_datos('ADMISIONES', 'ope_admisiones')
+    df_ind, _ = obtener_datos('INDICADORES', 'catalogo_indicadores')
 
-    # Función de filtrado por periodo (Año y Mes)
-    def filtrar_dashboard(df, anio, mes):
-        if df.empty: return df
-        
-        # Filtro de Año
-        col_anio = buscar_columna_inteligente(df, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
-        if col_anio:
-            df = df[df[col_anio].astype(str) == str(anio)]
-            
-        # Filtro de Mes (si no es 'Todos')
-        if mes != "Todos":
-            col_mes = buscar_columna_inteligente(df, ['MES', 'MONTH', 'PERIODO_MES'])
-            if col_mes:
-                mes_norm = normalize_text(mes)
-                df = df[df[col_mes].astype(str).apply(normalize_text) == mes_norm]
-                
-        return df
+    # 2. Aplicar Filtros
+    df_fact_f = filtrar_por_periodo(df_fact, anio_dash, mes_dash)
+    df_rad_f = filtrar_por_periodo(df_rad, anio_dash, mes_dash)
+    df_cart_f = filtrar_por_periodo(df_cart, anio_dash, mes_dash)
+    df_adm_f = filtrar_por_periodo(df_adm, anio_dash, mes_dash)
+    
+    # Nota: Los indicadores a veces no tienen columna fecha si son solo catálogo. 
+    # Si tienen histórico, se filtran igual.
+    df_ind_f = filtrar_por_periodo(df_ind, anio_dash, mes_dash)
 
-    # Aplicar filtros a los dataframes
-    df_fact = filtrar_dashboard(df_fact, anio_dash, mes_dash)
-    df_rad = filtrar_dashboard(df_rad, anio_dash, mes_dash)
-    df_cart = filtrar_dashboard(df_cart, anio_dash, mes_dash)
-    df_adm = filtrar_dashboard(df_adm, anio_dash, mes_dash)
-
-    # --- KPIs Cards ---
+    # --- TARJETAS KPI ---
     col1, col2, col3, col4 = st.columns(4)
     
     # KPI 1: Facturación
-    col_val_fact = buscar_columna_inteligente(df_fact, ['VALOR', 'FACTURADO', 'TOTAL'])
-    total_fact = df_fact[col_val_fact].sum() if not df_fact.empty and col_val_fact else 0
+    col_val_fact = buscar_columna_inteligente(df_fact_f, ['VALOR', 'FACTURADO', 'TOTAL'])
+    total_fact = df_fact_f[col_val_fact].sum() if not df_fact_f.empty and col_val_fact else 0
     
     with col1:
-        st.markdown(f"""
-            <div class="kpi-card">
-                <div class="kpi-title">Facturación Total</div>
-                <div class="kpi-value">${total_fact:,.0f}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-title">Facturación</div><div class="kpi-value">${total_fact:,.0f}</div></div>""", unsafe_allow_html=True)
 
     # KPI 2: Radicación
-    col_val_rad = buscar_columna_inteligente(df_rad, ['VALOR', 'RADICADO'])
-    total_rad = df_rad[col_val_rad].sum() if not df_rad.empty and col_val_rad else 0
+    col_val_rad = buscar_columna_inteligente(df_rad_f, ['VALOR', 'RADICADO'])
+    total_rad = df_rad_f[col_val_rad].sum() if not df_rad_f.empty and col_val_rad else 0
     
     with col2:
-        st.markdown(f"""
-            <div class="kpi-card" style="border-left-color: {COLOR_ACCENT}">
-                <div class="kpi-title">Radicación Total</div>
-                <div class="kpi-value">${total_rad:,.0f}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card" style="border-left-color: {COLOR_ACCENT}"><div class="kpi-title">Radicación</div><div class="kpi-value">${total_rad:,.0f}</div></div>""", unsafe_allow_html=True)
 
-    # KPI 3: Recaudo (Cartera)
-    col_val_recaudo = buscar_columna_inteligente(df_cart, ['RECAUDO', 'REAL'])
-    total_recaudo = df_cart[col_val_recaudo].sum() if not df_cart.empty and col_val_recaudo else 0
+    # KPI 3: Recaudo
+    col_val_recaudo = buscar_columna_inteligente(df_cart_f, ['RECAUDO', 'REAL'])
+    total_recaudo = df_cart_f[col_val_recaudo].sum() if not df_cart_f.empty and col_val_recaudo else 0
     
     with col3:
-        st.markdown(f"""
-            <div class="kpi-card" style="border-left-color: #27ae60">
-                <div class="kpi-title">Recaudo Real</div>
-                <div class="kpi-value">${total_recaudo:,.0f}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card" style="border-left-color: #27ae60"><div class="kpi-title">Recaudo</div><div class="kpi-value">${total_recaudo:,.0f}</div></div>""", unsafe_allow_html=True)
 
     # KPI 4: Admisiones
-    col_adm_cant = buscar_columna_inteligente(df_adm, ['CANTIDAD', 'ACTIVIDADES', 'PACIENTES'])
-    total_adm = df_adm[col_adm_cant].sum() if not df_adm.empty and col_adm_cant else 0
+    col_adm_cant = buscar_columna_inteligente(df_adm_f, ['CANTIDAD', 'ACTIVIDADES', 'PACIENTES'])
+    total_adm = df_adm_f[col_adm_cant].sum() if not df_adm_f.empty and col_adm_cant else 0
     
     with col4:
-        st.markdown(f"""
-            <div class="kpi-card" style="border-left-color: #3498db">
-                <div class="kpi-title">Total Admisiones</div>
-                <div class="kpi-value">{total_adm:,.0f}</div>
-            </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card" style="border-left-color: #3498db"><div class="kpi-title">Admisiones</div><div class="kpi-value">{total_adm:,.0f}</div></div>""", unsafe_allow_html=True)
 
-    # --- GRÁFICOS ---
+    # --- GRÁFICOS ESTRATÉGICOS ---
     c_chart1, c_chart2 = st.columns(2)
 
     with c_chart1:
-        st.subheader("📊 Tendencia del Ciclo Financiero")
-        # Preparar datos para gráfico multilínea
-        datos_grafico = []
+        st.subheader("📊 Tendencia Financiera (Anual)")
+        # Para tendencia usamos los datos SIN filtro de mes, pero CON filtro de año
+        df_fact_y = filtrar_por_periodo(df_fact, anio_dash, "Todos")
+        df_rad_y = filtrar_por_periodo(df_rad, anio_dash, "Todos")
         
-        def preparar_datos_tiempo(df, col_val, etiqueta):
-            if df.empty or not col_val: return
-            col_mes = buscar_columna_inteligente(df, ['MES', 'MONTH'])
-            if col_mes:
-                agrupado = df.groupby(col_mes)[col_val].sum().reset_index()
-                # Ordenar meses (simple)
-                agrupado['Mes_Num'] = agrupado[col_mes].apply(lambda x: LISTA_MESES.index(x) if x in LISTA_MESES else 99)
+        datos_grafico = []
+        def agregar_serie(df_in, col_v, etiqueta):
+            if df_in.empty or not col_v: return
+            col_m = buscar_columna_inteligente(df_in, ['MES', 'MONTH'])
+            if col_m:
+                agrupado = df_in.groupby(col_m)[col_v].sum().reset_index()
+                # Ordenar por mes lógico
+                agrupado['Mes_Num'] = agrupado[col_m].apply(lambda x: LISTA_MESES.index(x) if x in LISTA_MESES else 99)
                 agrupado = agrupado.sort_values('Mes_Num')
-                
-                for _, row in agrupado.iterrows():
-                    datos_grafico.append({'Mes': row[col_mes], 'Valor': row[col_val], 'Tipo': etiqueta})
+                for _, r in agrupado.iterrows():
+                    datos_grafico.append({'Mes': r[col_m], 'Valor': r[col_v], 'Tipo': etiqueta})
 
-        preparar_datos_tiempo(df_fact, col_val_fact, 'Facturado')
-        preparar_datos_tiempo(df_rad, col_val_rad, 'Radicado')
-        preparar_datos_tiempo(df_cart, col_val_recaudo, 'Recaudado')
+        agregar_serie(df_fact_y, col_val_fact, 'Facturado')
+        agregar_serie(df_rad_y, col_val_rad, 'Radicado')
         
         if datos_grafico:
-            df_chart = pd.DataFrame(datos_grafico)
-            fig = px.line(df_chart, x='Mes', y='Valor', color='Tipo', markers=True, 
-                          color_discrete_map={'Facturado': COLOR_PRIMARY, 'Radicado': COLOR_ACCENT, 'Recaudado': '#27ae60'})
-            fig.update_layout(height=350, margin=dict(l=20, r=20, t=20, b=20))
+            fig = px.line(pd.DataFrame(datos_grafico), x='Mes', y='Valor', color='Tipo', markers=True,
+                          color_discrete_map={'Facturado': COLOR_PRIMARY, 'Radicado': COLOR_ACCENT})
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Faltan datos de fechas para generar el gráfico de tendencias.")
+            st.info("No hay suficientes datos temporales para graficar tendencias.")
 
     with c_chart2:
-        st.subheader("🏢 Top Aseguradoras (Facturación)")
-        col_aseg = buscar_columna_inteligente(df_fact, ['ASEGURADORA', 'CLIENTE', 'EPS'])
+        st.subheader("🏢 Top Aseguradoras (Periodo Actual)")
+        # Usamos los datos filtrados por mes y año
+        col_aseg = buscar_columna_inteligente(df_fact_f, ['ASEGURADORA', 'CLIENTE', 'EPS'])
         
-        if not df_fact.empty and col_aseg and col_val_fact:
-            df_top = df_fact.groupby(col_aseg)[col_val_fact].sum().reset_index()
-            df_top = df_top.sort_values(col_val_fact, ascending=False).head(7)
-            
-            fig2 = px.bar(df_top, x=col_val_fact, y=col_aseg, orientation='h', 
-                          text_auto='.2s', color=col_val_fact, color_continuous_scale='Purples')
-            fig2.update_layout(yaxis={'categoryorder':'total ascending'}, height=350, margin=dict(l=20, r=20, t=20, b=20))
+        if not df_fact_f.empty and col_aseg and col_val_fact:
+            df_top = df_fact_f.groupby(col_aseg)[col_val_fact].sum().reset_index().sort_values(col_val_fact, ascending=False).head(7)
+            fig2 = px.bar(df_top, x=col_val_fact, y=col_aseg, orientation='h', text_auto='.2s', color=col_val_fact)
+            fig2.update_layout(yaxis={'categoryorder':'total ascending'})
             st.plotly_chart(fig2, use_container_width=True)
         else:
-            st.info("No se encontraron columnas de Aseguradora/Valor para el gráfico.")
+            st.info("Faltan datos de Aseguradora/Valor para este periodo.")
+
+    # --- SECCIÓN INDICADORES (KPIs) ---
+    st.markdown("### 🚦 Estado de Indicadores")
+    if not df_ind_f.empty:
+        st.dataframe(df_ind_f, use_container_width=True)
+    else:
+        st.info("No hay indicadores registrados para este periodo.")
+
 
 # ==============================================================================
-# MÓDULO 2: INDICADORES (VISUALIZACIÓN)
+# MÓDULO 2: INDICADORES (DETALLE)
 # ==============================================================================
 elif nav == "📊 Indicadores":
     df, _ = obtener_datos("INDICADORES", "catalogo_indicadores")
@@ -444,7 +466,7 @@ elif nav == "📊 Indicadores":
         st.dataframe(df, use_container_width=True)
 
 # ==============================================================================
-# MÓDULO 3: TABLERO OPERATIVO (VISUALIZACIÓN)
+# MÓDULO 3: TABLERO OPERATIVO (DETALLE)
 # ==============================================================================
 elif nav == "📈 Tablero Operativo":
     tabs = st.tabs(list(MAPA_TABLAS_OPERATIVAS.keys()))
@@ -454,21 +476,32 @@ elif nav == "📈 Tablero Operativo":
             df, real_name = obtener_datos(nombre_ui, nombre_tabla)
             
             if not df.empty:
+                # Filtros Locales por Pestaña
+                c1, c2 = st.columns(2)
+                
                 df_view = df.copy()
-                col_anio = buscar_columna_inteligente(df_view, ['ANIO', 'YEAR'])
+                col_anio = buscar_columna_inteligente(df_view, ['ANIO', 'YEAR', 'PERIODO_ANIO'])
+                col_mes = buscar_columna_inteligente(df_view, ['MES', 'MONTH', 'PERIODO_MES'])
+                
+                sel_a, sel_m = None, None
                 
                 if col_anio:
                     anios = sorted(df_view[col_anio].astype(str).unique())
-                    sel_a = st.multiselect(f"Año", anios, key=f"fa_{i}")
+                    sel_a = c1.multiselect(f"Año", anios, key=f"fa_{i}")
                     if sel_a: df_view = df_view[df_view[col_anio].astype(str).isin(sel_a)]
+                
+                if col_mes:
+                    meses = df_view[col_mes].astype(str).unique()
+                    sel_m = c2.multiselect(f"Mes", meses, key=f"fm_{i}")
+                    if sel_m: df_view = df_view[df_view[col_mes].astype(str).isin(sel_m)]
                 
                 st.dataframe(df_view, use_container_width=True)
                 st.caption(f"Registros: {len(df_view)}")
             else:
-                st.info(f"Sin datos en {nombre_ui}. Usa 'Gestión y Carga' para alimentar esta base.")
+                st.info(f"Sin datos en {nombre_ui}.")
 
 # ==============================================================================
-# MÓDULO 4: GESTIÓN Y CARGA (ADMINISTRACIÓN)
+# MÓDULO 4: GESTIÓN Y CARGA
 # ==============================================================================
 elif nav == "📂 Gestión y Carga":
     st.markdown("### 🛠️ Centro de Control de Datos")
@@ -479,7 +512,7 @@ elif nav == "📂 Gestión y Carga":
     with tab_carga:
         st.subheader("Alimentar Bases de Datos")
         
-        tipo_carga = st.selectbox("¿Qué desea cargar?", ["Indicadores (Catálogo)", "Datos Operativos (Facturación, Cartera...)"])
+        tipo_carga = st.selectbox("¿Qué desea cargar?", ["Indicadores (Catálogo)", "Datos Operativos"])
         
         if tipo_carga == "Indicadores (Catálogo)":
             st.info("Sube el archivo 'BASE INDICADORES.csv'")
@@ -496,9 +529,10 @@ elif nav == "📂 Gestión y Carga":
             proceso = st.selectbox("Seleccione el Proceso:", list(MAPA_TABLAS_OPERATIVAS.keys()))
             tabla_destino = MAPA_TABLAS_OPERATIVAS[proceso]
             
+            # Selectores de Periodo para inyección
             c1, c2 = st.columns(2)
-            anio = c1.selectbox("Año", LISTA_ANIOS)
-            mes = c2.selectbox("Mes", LISTA_MESES)
+            anio = c1.selectbox("Año de los datos:", LISTA_ANIOS)
+            mes = c2.selectbox("Mes de los datos:", LISTA_MESES)
             
             f = st.file_uploader(f"Archivo para {proceso}", type=['csv', 'xlsx'])
             modo = st.radio("Modo:", ["Agregar (Append)", "Reemplazar Todo (Replace)"])
@@ -506,13 +540,11 @@ elif nav == "📂 Gestión y Carga":
             if f and st.button(f"Cargar a {proceso}"):
                 try:
                     df = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-                    # Estampado de tiempo
-                    df['periodo_anio'] = anio
-                    df['periodo_mes'] = mes
-                    df['fecha_carga'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
                     modo_sql = 'append' if 'Append' in modo else 'replace'
-                    ok, msg = cargar_dataframe_bd(df, tabla_destino, modo=modo_sql)
+                    # Pasamos anio y mes para que la función los inyecte si faltan
+                    ok, msg = cargar_dataframe_bd(df, tabla_destino, modo=modo_sql, anio_sel=anio, mes_sel=mes)
+                    
                     if ok: st.success(msg)
                     else: st.error(msg)
                 except Exception as e: st.error(f"Error: {e}")
