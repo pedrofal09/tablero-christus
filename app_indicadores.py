@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import time
 import os
+import unicodedata
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -16,23 +17,24 @@ st.set_page_config(
 COLOR_PRIMARY = "#663399"
 COLOR_SECONDARY = "#2c3e50"
 
-# RUTA DE LA BASE DE DATOS (Asegúrate de que esta ruta sea accesible)
-DB_PATH = r"C:\Users\pedro\OneDrive\GENERAL ANTIGUA\Escritorio\mi_proyecto_inventario\Christus_DB_Master.db"
+# RUTA DE LA BASE DE DATOS (Intenta ambas rutas)
+DB_PATH_ABSOLUTE = r"C:\Users\pedro\OneDrive\GENERAL ANTIGUA\Escritorio\mi_proyecto_inventario\Christus_DB_Master.db"
+DB_NAME_LOCAL = "Christus_DB_Master.db"
 
-# Archivos de personalización visual (Se guardan en la misma carpeta del script)
+# Archivos de personalización visual
 LOCAL_LOGO_PATH = "logo_christus_custom.png"     
 LOCAL_BANNER_PATH = "banner_christus_custom.png" 
 DEFAULT_LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Christus_Health_Logo.svg/1200px-Christus_Health_Logo.svg.png"
 
-# ORDEN Y MAPEO DE TABLAS (SEGÚN TU REQUERIMIENTO)
+# MAPEO FLEXIBLE (Para búsqueda inteligente)
 MAPA_TABLAS_OPERATIVAS = {
-    'FACTURACION': 'ope_facturacion',
-    'RADICACION': 'ope_radicacion',
-    'ADMISIONES': 'ope_admisiones',
-    'AUTORIZACIONES': 'ope_autorizaciones',
-    'CUENTAS MEDICAS': 'ope_cuentas_medicas',
-    'CARTERA': 'ope_cartera',
-    'PROVISION': 'ope_provision'
+    'FACTURACION': ['ope_facturacion', 'facturacion', 'tbl_facturacion'],
+    'RADICACION': ['ope_radicacion', 'radicacion', 'tbl_radicacion'],
+    'ADMISIONES': ['ope_admisiones', 'admisiones', 'tbl_admisiones'],
+    'AUTORIZACIONES': ['ope_autorizaciones', 'autorizaciones', 'tbl_autorizaciones'],
+    'CUENTAS MEDICAS': ['ope_cuentas_medicas', 'cuentas_medicas', 'glosas'],
+    'CARTERA': ['ope_cartera', 'cartera', 'tbl_cartera'],
+    'PROVISION': ['ope_provision', 'provision', 'tbl_provision']
 }
 
 # --- ESTILOS CSS ---
@@ -50,112 +52,122 @@ st.markdown(f"""
         border-left: 5px solid {COLOR_PRIMARY};
         margin-bottom: 1rem;
     }}
-    .kpi-title {{ font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }}
-    .kpi-value {{ font-size: 28px; color: {COLOR_SECONDARY}; font-weight: 900; margin: 0; }}
-    h1, h2, h3 {{ color: {COLOR_PRIMARY}; }}
-    .stButton>button {{ background-color: {COLOR_PRIMARY}; color: white; border-radius: 5px; }}
+    .stAlert {{ margin-top: 1rem; }}
     </style>
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# GESTIÓN DE BASE DE DATOS (SOLO LECTURA)
+# FUNCIONES DE UTILIDAD Y BASE DE DATOS
 # ==============================================================================
 
+def normalize_text(text):
+    """Elimina tildes y convierte a mayúsculas para comparaciones."""
+    if not isinstance(text, str): return str(text)
+    text = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
+    return text.upper().strip()
+
 def get_connection():
-    # Intentar ruta absoluta
-    if os.path.exists(DB_PATH):
-        return sqlite3.connect(DB_PATH, check_same_thread=False)
+    """Conexión robusta con reporte de ruta."""
+    # 1. Intentar ruta absoluta
+    if os.path.exists(DB_PATH_ABSOLUTE):
+        return sqlite3.connect(DB_PATH_ABSOLUTE, check_same_thread=False), DB_PATH_ABSOLUTE
     
-    # Intentar ruta relativa (en la misma carpeta)
-    if os.path.exists("Christus_DB_Master.db"):
-        return sqlite3.connect("Christus_DB_Master.db", check_same_thread=False)
-        
-    st.error(f"⚠️ No se encuentra la base de datos en: {DB_PATH}")
-    st.info("Ejecuta el 'Gestor_Bases_Christus.py' para crearla y cargar datos.")
-    st.stop()
+    # 2. Intentar ruta local
+    if os.path.exists(DB_NAME_LOCAL):
+        return sqlite3.connect(DB_NAME_LOCAL, check_same_thread=False), os.path.abspath(DB_NAME_LOCAL)
+    
+    return None, None
 
 def obtener_imagen_local(path, default=None):
-    if os.path.exists(path):
-        return path
+    if os.path.exists(path): return path
     return default
 
 def autenticar(user, pwd):
-    """Verifica usuario y contraseña en la BD."""
-    conn = get_connection()
+    conn, path = get_connection()
+    if not conn: return None, "No se encontró la Base de Datos"
+    
     df = pd.DataFrame()
-    
     try:
-        # Consulta principal usando la columna creada por el gestor
-        query = "SELECT * FROM usuarios WHERE usuario = ? AND contrasena = ?"
-        df = pd.read_sql(query, conn, params=(user, pwd))
+        # Intentar leer usuario
+        query = "SELECT * FROM usuarios"
+        all_users = pd.read_sql(query, conn)
+        
+        # Filtrado manual en Python para evitar problemas de SQL con columnas 'contraseña' vs 'password'
+        # Detectar columna de contraseña
+        col_pwd = None
+        for c in all_users.columns:
+            if normalize_text(c) in ['CONTRASENA', 'PASSWORD', 'CLAVE', 'CONTRASEÑA']:
+                col_pwd = c
+                break
+        
+        if col_pwd:
+            # Filtrar
+            user_match = all_users[
+                (all_users['usuario'].astype(str) == user) & 
+                (all_users[col_pwd].astype(str) == pwd)
+            ]
+            if not user_match.empty:
+                row = user_match.iloc[0]
+                conn.close()
+                return {
+                    'USUARIO': row['usuario'],
+                    'ROL': row.get('rol', 'Usuario'),
+                    'AREA_ACCESO': row.get('area_acceso', 'Todas')
+                }, None
     except Exception as e:
-        # Fallback por si la columna se llama diferente en versiones viejas
-        try:
-            query = "SELECT * FROM usuarios WHERE usuario = ? AND password = ?"
-            df = pd.read_sql(query, conn, params=(user, pwd))
-        except:
-            st.error(f"Error en autenticación: {e}")
-    finally:
         conn.close()
+        return None, str(e)
+        
+    conn.close()
+    return None, "Usuario o contraseña incorrectos"
+
+def obtener_tablas_disponibles():
+    """Lista todas las tablas reales en la BD."""
+    conn, _ = get_connection()
+    if not conn: return []
+    try:
+        tablas = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)['name'].tolist()
+    except:
+        tablas = []
+    conn.close()
+    return tablas
+
+def buscar_tabla_mejor_coincidencia(nombre_objetivo, lista_candidatos):
+    """Busca la tabla en la BD."""
+    tablas_bd = obtener_tablas_disponibles()
+    tablas_bd_norm = {normalize_text(t): t for t in tablas_bd}
     
-    if not df.empty:
-        row = df.iloc[0]
-        return {
-            'USUARIO': row['usuario'],
-            'ROL': row.get('rol', 'Usuario'),
-            'AREA_ACCESO': row.get('area_acceso', 'Todas')
-        }
+    # 1. Búsqueda por lista de candidatos configurada
+    for cand in lista_candidatos:
+        cand_norm = normalize_text(cand)
+        if cand_norm in tablas_bd_norm:
+            return tablas_bd_norm[cand_norm]
+    
+    # 2. Búsqueda parcial (contiene palabra clave)
+    clave = normalize_text(nombre_objetivo)
+    for t_norm, t_real in tablas_bd_norm.items():
+        if clave in t_norm:
+            return t_real
+            
     return None
 
-def obtener_catalogo_indicadores():
-    conn = get_connection()
-    try:
-        df = pd.read_sql("SELECT * FROM catalogo_indicadores", conn)
-        # Normalizar mayúsculas
-        df.columns = [c.upper() for c in df.columns]
-    except:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
-
-def buscar_tabla_inteligente(conn, nombre_objetivo):
-    """Busca tablas ignorando mayúsculas/minúsculas."""
-    try:
-        tablas_db = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)['name'].tolist()
-        
-        # 1. Exacta
-        if nombre_objetivo in tablas_db: return nombre_objetivo
-        
-        # 2. Insensible a mayúsculas
-        for t in tablas_db:
-            if t.lower() == nombre_objetivo.lower(): return t
-            
-        # 3. Aproximada (contiene la palabra clave)
-        clave = nombre_objetivo.replace('ope_', '')
-        for t in tablas_db:
-            if clave in t.lower(): return t
-            
-        return None
-    except:
-        return None
-
-def obtener_datos_tabla(nombre_tabla_ideal):
-    conn = get_connection()
-    df = pd.DataFrame()
-    nombre_real = nombre_tabla_ideal
+def obtener_datos(nombre_categoria, candidatos):
+    conn, _ = get_connection()
+    if not conn: return pd.DataFrame(), "Sin conexión"
     
-    tabla_real = buscar_tabla_inteligente(conn, nombre_tabla_ideal)
+    tabla_real = buscar_tabla_mejor_coincidencia(nombre_categoria, candidatos)
     
     if tabla_real:
-        nombre_real = tabla_real
         try:
-            df = pd.read_sql(f"SELECT * FROM {nombre_real}", conn)
-        except:
-            pass
+            df = pd.read_sql(f"SELECT * FROM {tabla_real}", conn)
+            conn.close()
+            return df, tabla_real
+        except Exception as e:
+            conn.close()
+            return pd.DataFrame(), str(e)
             
     conn.close()
-    return df, nombre_real
+    return pd.DataFrame(), None
 
 # ==============================================================================
 # INTERFAZ DE USUARIO
@@ -164,149 +176,147 @@ def obtener_datos_tabla(nombre_tabla_ideal):
 if 'user_info' not in st.session_state:
     st.session_state.user_info = None
 
-# Cargar imágenes personalizadas
 logo_actual = obtener_imagen_local(LOCAL_LOGO_PATH, DEFAULT_LOGO_URL)
 banner_actual = obtener_imagen_local(LOCAL_BANNER_PATH, None)
 
-# --- PANTALLA DE LOGIN ---
+# --- LOGIN ---
 if st.session_state.user_info is None:
     c1, c2, c3 = st.columns([1, 1.5, 1])
     with c2:
         st.markdown("<br>", unsafe_allow_html=True)
-        try:
-            if logo_actual: st.image(logo_actual, width=250)
+        try: st.image(logo_actual, width=250)
         except: pass
-            
         st.markdown(f"<h3 style='text-align: center; color: {COLOR_SECONDARY};'>Visualizador Operativo</h3>", unsafe_allow_html=True)
         
-        with st.form("login_form"):
+        # Diagnóstico de Conexión en Login
+        conn_test, path_used = get_connection()
+        if conn_test:
+            st.success(f"✅ Base de datos conectada")
+            st.caption(f"Ruta: {path_used}")
+            conn_test.close()
+            
+            # Verificar si hay usuarios
+            if len(obtener_tablas_disponibles()) == 0:
+                 st.error("⚠️ La base de datos está vacía (0 tablas). Ejecuta el Gestor de Bases primero.")
+        else:
+            st.error("❌ No se encontró el archivo 'Christus_DB_Master.db'.")
+            st.info(f"Ruta esperada: {DB_PATH_ABSOLUTE}")
+        
+        with st.form("login"):
             u = st.text_input("Usuario")
             p = st.text_input("Contraseña", type="password")
-            
             if st.form_submit_button("INGRESAR", use_container_width=True):
-                user_data = autenticar(u, p)
+                user_data, err = autenticar(u, p)
                 if user_data:
                     st.session_state.user_info = user_data
                     st.rerun()
                 else:
-                    st.error("Credenciales incorrectas.")
-        
-        st.caption(f"Conexión BD: {DB_PATH}")
+                    st.error(err)
     st.stop()
 
-# --- APP PRINCIPAL (DENTRO) ---
+# --- DENTRO DE LA APP ---
 user = st.session_state.user_info
-usuario_nombre = user['USUARIO']
 usuario_rol = user['ROL']
-usuario_area = user['AREA_ACCESO']
+usuario_area_norm = normalize_text(user['AREA_ACCESO'])
 
-# --- BARRA LATERAL ---
+# --- SIDEBAR ---
 with st.sidebar:
-    try:
-        if logo_actual: st.image(logo_actual, use_column_width=True)
-    except: st.header("Christus Health")
+    try: st.image(logo_actual, use_column_width=True)
+    except: st.header("Christus")
     
-    st.markdown(f"""
-        <div style="padding:10px; background:white; border-radius:5px; margin-bottom:10px;">
-            <b>👤 {usuario_nombre}</b><br>
-            <small>{usuario_rol} | {usuario_area}</small>
-        </div>
-    """, unsafe_allow_html=True)
+    st.info(f"👤 {user['USUARIO']}\n\nRol: {usuario_rol}\nÁrea: {user['AREA_ACCESO']}")
     
-    modo = st.radio("Navegación:", ["📊 Indicadores (KPIs)", "📈 Tablero Operativo"])
+    nav = st.radio("Ir a:", ["📊 Indicadores", "📈 Tablero Operativo"])
     
     st.markdown("---")
-    
-    # Personalización Visual
-    with st.expander("🎨 Personalizar Identidad"):
-        uploaded_logo = st.file_uploader("Logo Sidebar", type=['png', 'jpg'], key="logo")
-        if uploaded_logo:
+    with st.expander("🛠️ Personalizar / Diagnóstico"):
+        st.write("**Tablas en BD:**")
+        st.code(obtener_tablas_disponibles())
+        
+        uploaded_logo = st.file_uploader("Logo", type=['png','jpg'], key="l")
+        if uploaded_logo: 
             with open(LOCAL_LOGO_PATH, "wb") as f: f.write(uploaded_logo.getbuffer())
-            st.success("Guardado"); time.sleep(1); st.rerun()
-            
-        uploaded_banner = st.file_uploader("Banner Superior", type=['png', 'jpg'], key="banner")
-        if uploaded_banner:
-            with open(LOCAL_BANNER_PATH, "wb") as f: f.write(uploaded_banner.getbuffer())
-            st.success("Guardado"); time.sleep(1); st.rerun()
-            
-        if st.button("Restaurar Originales"):
-            if os.path.exists(LOCAL_LOGO_PATH): os.remove(LOCAL_LOGO_PATH)
-            if os.path.exists(LOCAL_BANNER_PATH): os.remove(LOCAL_BANNER_PATH)
             st.rerun()
-
-    if st.button("Cerrar Sesión"):
+            
+    if st.button("Salir"):
         st.session_state.user_info = None
         st.rerun()
 
-# --- CABECERA SUPERIOR ---
+# --- HEADER ---
 if banner_actual:
     try: st.image(banner_actual, use_container_width=True)
     except: pass
 
-st.title(modo.split(" ")[1] + " " + modo.split(" ")[2])
+st.title(nav)
 
-# ------------------------------------------------------------------------------
-# MÓDULO 1: INDICADORES
-# ------------------------------------------------------------------------------
-if "Indicadores" in modo:
-    df = obtener_catalogo_indicadores()
+# --- MÓDULO INDICADORES ---
+if nav == "📊 Indicadores":
+    # Buscar tabla de indicadores (varios nombres posibles)
+    df, nombre_tabla = obtener_datos("INDICADORES", ['catalogo_indicadores', 'indicadores', 'base_indicadores'])
     
     if df.empty:
-        st.info("No hay indicadores cargados en la base de datos.")
+        st.warning("⚠️ No se encontró la tabla de indicadores.")
+        st.markdown("Asegúrate de haber cargado el archivo 'BASE INDICADORES' en el Gestor.")
     else:
-        # Filtrado por área de usuario
-        if usuario_area not in ['Todas', 'TODAS']:
-            col_area = 'ÁREA' if 'ÁREA' in df.columns else 'AREA'
-            if col_area in df.columns:
-                df = df[df[col_area] == usuario_area]
+        # Normalizar columnas para evitar errores de mayúsculas/tildes
+        df.columns = [normalize_text(c) for c in df.columns]
         
-        st.markdown(f"**Total Indicadores:** {len(df)}")
-        st.dataframe(df, use_container_width=True)
-
-# ------------------------------------------------------------------------------
-# MÓDULO 2: TABLERO OPERATIVO (VISOR)
-# ------------------------------------------------------------------------------
-elif "Tablero Operativo" in modo:
-    # Diagnóstico oculto
-    with st.expander("🔍 Diagnóstico de Tablas (Técnico)", expanded=False):
-        conn = get_connection()
-        tbls = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", conn)
-        st.write("Tablas encontradas:", tbls['name'].tolist())
-        conn.close()
-
-    # Pestañas en el orden solicitado
-    pestanas = list(MAPA_TABLAS_OPERATIVAS.keys())
-    tabs = st.tabs(pestanas)
-    
-    for i, nombre_pestana in enumerate(pestanas):
-        with tabs[i]:
-            tabla_ideal = MAPA_TABLAS_OPERATIVAS[nombre_pestana]
-            df_tabla, nombre_real_db = obtener_datos_tabla(tabla_ideal)
+        # Buscar columna de AREA
+        col_area = next((c for c in df.columns if 'AREA' in c), None)
+        
+        if not col_area:
+            st.error("La tabla de indicadores existe pero no tiene columna 'AREA'.")
+            st.write("Columnas encontradas:", df.columns.tolist())
+        else:
+            # LOGICA DE FILTRADO
+            # Si es Admin, CEO o tiene acceso "TODAS", ve todo.
+            if usuario_area_norm in ['TODAS', 'TODOS', 'ALL'] or normalize_text(usuario_rol) in ['ADMIN', 'CEO', 'ADMIN DELEGADO']:
+                df_view = df
+                st.success(f"Mostrando todos los registros ({len(df)}) - Modo Admin/Todas")
+            else:
+                # Filtrar normalizando texto
+                df['TEMP_AREA_NORM'] = df[col_area].apply(normalize_text)
+                df_view = df[df['TEMP_AREA_NORM'] == usuario_area_norm].drop(columns=['TEMP_AREA_NORM'])
             
-            if not df_tabla.empty:
-                # Filtros de año/mes si existen
-                c1, c2 = st.columns(2)
-                df_view = df_tabla.copy()
-                
-                if 'periodo_anio' in df_view.columns:
-                    anios = sorted(df_view['periodo_anio'].astype(str).unique())
-                    sel_anio = c1.multiselect(f"Año ({nombre_pestana})", anios, default=anios, key=f"y_{i}")
-                    if sel_anio:
-                        df_view = df_view[df_view['periodo_anio'].astype(str).isin(sel_anio)]
-                        
-                if 'periodo_mes' in df_view.columns:
-                    meses = df_view['periodo_mes'].unique()
-                    sel_mes = c2.multiselect(f"Mes ({nombre_pestana})", meses, default=meses, key=f"m_{i}")
-                    if sel_mes:
-                        df_view = df_view[df_view['periodo_mes'].isin(sel_mes)]
-                
+            if df_view.empty:
+                st.info(f"No hay indicadores asignados al área: {user['AREA_ACCESO']}")
+            else:
                 st.dataframe(df_view, use_container_width=True)
-                st.caption(f"Fuente: {nombre_real_db} | {len(df_view)} registros")
+
+# --- MÓDULO TABLERO OPERATIVO ---
+elif nav == "📈 Tablero Operativo":
+    tabs = st.tabs(list(MAPA_TABLAS_OPERATIVAS.keys()))
+    
+    for i, (nombre_ui, candidatos) in enumerate(MAPA_TABLAS_OPERATIVAS.items()):
+        with tabs[i]:
+            df, nombre_real = obtener_datos(nombre_ui, candidatos)
+            
+            if not df.empty:
+                st.success(f"✅ Datos cargados desde tabla: **{nombre_real}**")
                 
-                # Descargar
-                csv = df_view.to_csv(index=False).encode('utf-8')
-                st.download_button("⬇️ Descargar CSV", csv, f"{nombre_pestana}.csv", "text/csv", key=f"d_{i}")
+                # Normalizar nombres de columnas para filtros
+                df_display = df.copy()
+                cols_norm = {c: normalize_text(c) for c in df.columns}
+                
+                # Intentar filtros de fecha si existen columnas parecidas a 'ANIO' o 'MES'
+                col_anio = next((c for c, cn in cols_norm.items() if 'ANIO' in cn or 'YEAR' in cn), None)
+                col_mes = next((c for c, cn in cols_norm.items() if 'MES' in cn or 'MONTH' in cn), None)
+                
+                c1, c2 = st.columns(2)
+                if col_anio:
+                    anios = sorted(df_display[col_anio].astype(str).unique())
+                    sel_a = c1.multiselect(f"Filtrar Año", anios, key=f"fa{i}")
+                    if sel_a: df_display = df_display[df_display[col_anio].astype(str).isin(sel_a)]
+                    
+                if col_mes:
+                    meses = df_display[col_mes].astype(str).unique()
+                    sel_m = c2.multiselect(f"Filtrar Mes", meses, key=f"fm{i}")
+                    if sel_m: df_display = df_display[df_display[col_mes].astype(str).isin(sel_m)]
+                
+                st.dataframe(df_display, use_container_width=True)
+                st.caption(f"Total registros: {len(df_display)}")
                 
             else:
-                st.warning(f"No hay datos para **{nombre_pestana}**.")
-                st.info(f"El sistema buscó la tabla '{tabla_ideal}' (o similares) pero no encontró registros.")
+                st.warning(f"No se encontraron datos para **{nombre_ui}**.")
+                st.markdown(f"**Diagnóstico:** El sistema buscó tablas llamadas: `{candidatos}` pero no existen en la BD.")
+                if nombre_real: st.error(f"Error técnico: {nombre_real}")
